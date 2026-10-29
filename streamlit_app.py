@@ -151,151 +151,239 @@ def build_map(
     gdf: gpd.GeoDataFrame,
 ):
     """
-    Folium haritası üretir.
-
-    Nokta, çizgi ve poligon geometrilerini destekler.
-    Folium veya streamlit-folium kurulu değilse hata verir;
-    böylece haritanın oluşturulamadığı durum gizlenmez.
+    Folium haritası üretir; karma geometri türlerini, kayıt renklerini,
+    etiket ofsetlerini ve otomatik lejantı destekler.
     """
+    import html
+    import re
 
     try:
         import folium
         from folium.features import GeoJsonTooltip
+        from branca.element import Element
         from streamlit_folium import st_folium
     except ImportError as exc:
         raise RuntimeError(
-            "İnteraktif harita için folium ve "
+            "İnteraktif harita için folium, branca ve "
             "streamlit-folium paketleri kurulmalıdır."
         ) from exc
 
     if gdf.empty:
         raise ValueError("Haritada gösterilecek kayıt yok.")
+    if "geometry" not in gdf.columns:
+        raise ValueError("Veri kümesinde geometry sütunu bulunamadı.")
 
     geographic = gdf.copy()
-
-    # Folium, WGS84 boylam/enlem koordinatlarını bekler.
     if geographic.crs is None:
+        # GeoJSON koordinatları WGS84'dür; diğer kaynaklar için
+        # CRS tahmini yapmak güvenli olmadığından açık hata ver.
         raise ValueError(
-            "Veri koordinat sistemi tanımlanmamış."
+            "Koordinat sistemi tanımlanmamış. Veriye doğru CRS (ör. EPSG:4326) atanmalı."
         )
 
     geographic = geographic.to_crs("EPSG:4326")
+    geographic = geographic[
+        geographic.geometry.notna() & ~geographic.geometry.is_empty
+    ].copy()
+    if geographic.empty:
+        raise ValueError("Geçerli geometri içeren kayıt bulunamadı.")
 
-    # Harita merkezi: tüm geometrilerin toplam sınır kutusu.
     minx, miny, maxx, maxy = geographic.total_bounds
-
-    if not all(
-        pd.notna(value)
-        for value in (minx, miny, maxx, maxy)
-    ):
+    if not all(pd.notna(v) for v in (minx, miny, maxx, maxy)):
         raise ValueError("Harita sınırları hesaplanamadı.")
 
-    center_lat = (miny + maxy) / 2
-    center_lon = (minx + maxx) / 2
-
     fmap = folium.Map(
-        location=[center_lat, center_lon],
+        location=[(miny + maxy) / 2, (minx + maxx) / 2],
         zoom_start=4,
         control_scale=True,
-        tiles="OpenStreetMap",
+        tiles="CartoDB positron",
+        prefer_canvas=True,
     )
 
+    def safe_color(value: object) -> str:
+        color = str(value or DEFAULT_COLOR).strip()
+        return color if re.fullmatch(r"#[0-9a-fA-F]{6}", color) else DEFAULT_COLOR
+
+    def safe_text(value: object, fallback: str = "") -> str:
+        if value is None or pd.isna(value):
+            return fallback
+        return html.escape(str(value))
+
+    legend_items: list[str] = []
     tooltip_fields = [
-        field
-        for field in (
-            "name",
-            "description",
-            "group",
-            "period",
-            "source_status",
-        )
+        field for field in ("name", "description", "group", "period", "source_status")
         if field in geographic.columns
     ]
 
-    if geographic.geometry.geom_type.isin(
-        ["Point", "MultiPoint"]
-    ).all():
-        # Noktaları ayrı marker'lar olarak göster.
-        for _, row in geographic.iterrows():
-            geometry = row.geometry
-            geometries = (
-                list(geometry.geoms)
-                if geometry.geom_type == "MultiPoint"
-                else [geometry]
-            )
+    for _, row in geographic.iterrows():
+        geom = row.geometry
+        name_raw = row.get("name", row.get("label", "Kayıt"))
+        name = str(name_raw) if pd.notna(name_raw) else "Kayıt"
+        description = row.get("description", "")
+        color = safe_color(row.get("color", DEFAULT_COLOR))
+        name_html = safe_text(name, "Kayıt")
+        description_html = safe_text(description)
 
-            color = str(
-                row.get("color", DEFAULT_COLOR)
-            )
+        popup_html = (
+            '<div style="min-width:190px;max-width:320px">'
+            f'<div style="font-weight:700;color:{color};margin-bottom:5px">{name_html}</div>'
+            f'<div>{description_html}</div>'
+            '</div>'
+        )
+        popup = folium.Popup(popup_html, max_width=350)
 
-            if not color.startswith("#") or len(color) not in (4, 7):
-                color = DEFAULT_COLOR
-
-            for point in geometries:
-                if point.is_empty:
-                    continue
-
-                popup_html = (
-                    "<div style='min-width:200px'>"
-                    f"<b>{str(row.get('name', 'Kayıt'))}</b><br>"
-                    f"{str(row.get('description', ''))}<br>"
-                    f"<small>{str(row.get('group', ''))}</small>"
-                    "</div>"
-                )
-
+        # Her geometri türünü ayrı ele alarak karma FeatureCollection'ı destekle.
+        if geom.geom_type in ("Point", "MultiPoint"):
+            points = list(geom.geoms) if geom.geom_type == "MultiPoint" else [geom]
+            for point in points:
                 folium.CircleMarker(
                     location=[point.y, point.x],
-                    radius=7,
+                    radius=6,
                     color=color,
+                    weight=2,
                     fill=True,
                     fill_color=color,
-                    fill_opacity=0.85,
-                    tooltip=str(
-                        row.get("label", row.get("name", "Kayıt"))
-                    ),
-                    popup=folium.Popup(
-                        popup_html,
-                        max_width=350,
-                    ),
+                    fill_opacity=0.9,
+                    tooltip=name,
+                    popup=popup,
                 ).add_to(fmap)
 
-    else:
-        # Nokta dışındaki geometrileri GeoJSON katmanı olarak göster.
-        tooltip = None
+            # Etiket ofsetleri derece cinsindendir; yalnızca etiketin yerini etkiler.
+            point = points[0]
+            try:
+                dx = float(row.get("label_dx", 0.5))
+                dy = float(row.get("label_dy", 0.5))
+            except (TypeError, ValueError):
+                dx, dy = 0.5, 0.5
 
-        if tooltip_fields:
-            tooltip = GeoJsonTooltip(
-                fields=tooltip_fields,
-                aliases=[
-                    field.replace("_", " ").title()
+            folium.Marker(
+                location=[point.y + dy, point.x + dx],
+                icon=folium.DivIcon(
+                    icon_size=(260, 24),
+                    icon_anchor=(0, 12),
+                    html=(
+                        '<div style="'
+                        f'color:{color};font-size:12px;font-weight:700;'
+                        'white-space:nowrap;'
+                        'text-shadow:-1px -1px 2px white,1px 1px 2px white;'
+                        '">'
+                        f'{name_html}</div>'
+                    ),
+                ),
+                interactive=False,
+            ).add_to(fmap)
+
+        else:
+            # GeoJSON özelliğini koruyarak çizgi/poligon biçimlerini çiz.
+            feature = {
+                "type": "Feature",
+                "properties": {
+                    "name": name,
+                    "description": "" if pd.isna(description) else str(description),
+                    "group": str(row.get("group", "")),
+                    "color": color,
+                },
+                "geometry": json.loads(gpd.GeoSeries([geom], crs="EPSG:4326").to_json())[
+                    "features"
+                ][0]["geometry"],
+            }
+
+            tooltip = None
+            if tooltip_fields:
+                feature["properties"].update({
+                    field: (
+                        "" if pd.isna(row.get(field)) else str(row.get(field))
+                    )
                     for field in tooltip_fields
-                ],
-                localize=True,
-                sticky=True,
+                })
+                tooltip = GeoJsonTooltip(
+                    fields=tooltip_fields,
+                    aliases=[field.replace("_", " ").title() for field in tooltip_fields],
+                    sticky=True,
+                    localize=True,
+                )
+
+            layer = folium.GeoJson(
+                data=feature,
+                name=name,
+                style_function=lambda feature, c=color: {
+                    "color": c,
+                    "weight": 3,
+                    "opacity": 0.9,
+                    "fillColor": c,
+                    "fillOpacity": 0.18,
+                },
+                tooltip=tooltip,
+                popup=folium.GeoJsonPopup(
+                    fields=["name", "description"],
+                    aliases=["Ad", "Açıklama"],
+                    labels=True,
+                    localize=True,
+                ),
             )
+            layer.add_to(fmap)
 
-        folium.GeoJson(
-            data=json.loads(geographic.to_json()),
-            name="Tarihsel-coğrafi kayıtlar",
-            tooltip=tooltip,
-            style_function=lambda feature: {
-                "color": feature.get(
-                    "properties", {}
-                ).get("color", DEFAULT_COLOR),
-                "weight": 2,
-                "fillOpacity": 0.25,
-            },
-        ).add_to(fmap)
+            # Çizgi etiketi yaklaşık orta konuma yerleştirilir.
+            if geom.geom_type in ("LineString", "MultiLineString"):
+                anchor = geom.interpolate(0.5, normalized=True) if geom.geom_type == "LineString" else geom.centroid
+            elif geom.geom_type in ("Polygon", "MultiPolygon"):
+                anchor = geom.representative_point()
+            else:
+                anchor = geom.centroid
 
-    folium.LayerControl().add_to(fmap)
+            try:
+                dx = float(row.get("label_dx", 0.5))
+                dy = float(row.get("label_dy", 0.5))
+            except (TypeError, ValueError):
+                dx, dy = 0.5, 0.5
 
-    # Verilerdeki noktalar için sınırları ekrana sığdır.
-    if len(geographic) > 1:
-        fmap.fit_bounds([
-            [miny, minx],
-            [maxy, maxx],
-        ])
+            folium.Marker(
+                location=[anchor.y + dy, anchor.x + dx],
+                icon=folium.DivIcon(
+                    icon_size=(280, 24),
+                    icon_anchor=(0, 12),
+                    html=(
+                        '<div style="'
+                        f'color:{color};font-size:12px;font-weight:700;'
+                        'white-space:nowrap;'
+                        'text-shadow:-1px -1px 2px white,1px 1px 2px white;'
+                        '">'
+                        f'{name_html}</div>'
+                    ),
+                ),
+                interactive=False,
+            ).add_to(fmap)
 
+        legend_items.append(
+            '<div style="display:flex;align-items:center;gap:8px;margin:5px 0;">'
+            f'<span style="display:inline-block;width:12px;height:12px;'
+            f'border-radius:50%;background:{color};border:1px solid #555;'
+            f'flex-shrink:0"></span>'
+            f'<span>{name_html}</span></div>'
+        )
+
+    legend_html = (
+        '<div style="position:fixed;bottom:22px;left:22px;z-index:9999;'
+        'background:rgba(255,255,255,.96);color:#222;padding:12px 14px;'
+        'border:1px solid #aaa;border-radius:8px;'
+        'box-shadow:0 2px 8px rgba(0,0,0,.22);'
+        'max-height:38vh;overflow-y:auto;max-width:310px;'
+        'font-size:12px;line-height:1.35">'
+        '<div style="font-weight:700;margin-bottom:8px">'
+        'Hazar–Oğur toplulukları ve güzergâhlar</div>'
+        + "".join(legend_items)
+        + "</div>"
+    )
+    fmap.get_root().html.add_child(Element(legend_html))
+
+    # Birden fazla kayıtta tüm veri görünür alana sığdırılır.
+    if len(geographic) > 1 and minx != maxx and miny != maxy:
+        fmap.fit_bounds([[miny, minx], [maxy, maxx]], padding=(25, 25))
+    else:
+        fmap.location = [(miny + maxy) / 2, (minx + maxx) / 2]
+        fmap.zoom_start = 5
+
+    folium.LayerControl(collapsed=True).add_to(fmap)
     return fmap, st_folium
 
 
