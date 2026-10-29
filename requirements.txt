@@ -1,5 +1,8 @@
-streamlit>=1.30.0
-geopandas>=0.14.0
-shapely>=2.0.0
-matplotlib>=3.8.0
-numpy>=1.26.0
+streamlit
+streamlit-folium
+folium
+geopandas
+shapely
+pandas
+numpy
+requests
