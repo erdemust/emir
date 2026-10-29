@@ -1,199 +1,500 @@
+
 from __future__ import annotations
+
 import json
 from io import BytesIO, StringIO
 from pathlib import Path
+from typing import Any
+
 import geopandas as gpd
 import pandas as pd
 import streamlit as st
 from shapely import wkt
-
-CRS = "EPSG:4326"
-DATA_FILE = Path(__file__).resolve().parent / "hazar_ogur.geojson"
+from shapely.geometry import shape
 
 
-def _normalise_gdf(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    if not isinstance(gdf, gpd.GeoDataFrame):
-        raise ValueError("Geçerli bir GeoDataFrame gerekli.")
+# ============================================================
+# DOSYA YOLLARI VE SABİTLER
+# ============================================================
 
-    gdf = gdf.copy()
+MODULE_DIR = Path(__file__).resolve().parent
+DATA_FILE = MODULE_DIR / "hazar_ogur.geojson"
 
-    if gdf.empty:
-        return gpd.GeoDataFrame(
-            {
-                "nombre": pd.Series(dtype="object"),
-                "descripcion": pd.Series(dtype="object"),
-                "grupo": pd.Series(dtype="object"),
-                "tipo_geometria": pd.Series(dtype="object"),
-                "geometry": gpd.GeoSeries([], crs=CRS),
-            },
-            geometry="geometry",
-            crs=CRS,
+SUPPORTED_EXTENSIONS = {".geojson", ".json", ".csv"}
+
+DEFAULT_CRS = "EPSG:4326"
+
+DEFAULT_COLOR = "#5470C6"
+
+
+# ============================================================
+# HATA SINIFI
+# ============================================================
+
+class DataValidationError(ValueError):
+    """Veri dosyası beklenen yapıya sahip olmadığında oluşturulur."""
+
+
+# ============================================================
+# YARDIMCI FONKSİYONLAR
+# ============================================================
+
+def _normalise_column_names(
+    df: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
+    """Sütun adlarını boşluksuz ve tutarlı hâle getirir."""
+
+    df = df.copy()
+    df.columns = [
+        str(column).strip()
+        for column in df.columns
+    ]
+
+    # Aynı sütun adının tekrarlanmasını engelle.
+    if df.columns.duplicated().any():
+        duplicates = df.columns[df.columns.duplicated()].tolist()
+        raise DataValidationError(
+            f"Tekrarlanan sütun adları: {duplicates}"
         )
 
-    if gdf.crs is None:
-        gdf = gdf.set_crs(CRS)
-    else:
-        gdf = gdf.to_crs(CRS)
+    return df
 
-    gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty].copy()
 
-    if gdf.empty:
-        raise ValueError("Dosyada geçerli geometri bulunamadı.")
+def _normalise_gdf(
+    df: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
+    """
+    GeoDataFrame alanlarını uygulama genelinde tutarlı hâle getirir.
 
-    # GeoJSON alan adlarını uygulamanın kullandığı adlarla eşleştir.
+    Korunan temel alanlar:
+      name, description, group, color, label, geometry
+
+    Uyumluluk alanları:
+      nombre, descripcion, grupo, tipo_geometria
+    """
+
+    if not isinstance(df, gpd.GeoDataFrame):
+        raise DataValidationError(
+            "Girdi bir GeoDataFrame olmalıdır."
+        )
+
+    df = _normalise_column_names(df)
+
+    if df.empty:
+        raise DataValidationError(
+            "Veri dosyası boş; en az bir kayıt gerekli."
+        )
+
+    # Farklı kaynaklardan gelen alan adlarını eşleştir.
     aliases = {
-        "name": "nombre",
-        "description": "descripcion",
+        "name": ("nombre", "title", "baslik", "başlık"),
+        "description": (
+            "descripcion",
+            "açıklama",
+            "aciklama",
+            "details",
+        ),
+        "group": ("grupo", "category", "kategori"),
+        "color": ("renk",),
+        "label": ("etiket",),
     }
 
-    for source, target in aliases.items():
-        if target not in gdf.columns and source in gdf.columns:
-            gdf[target] = gdf[source]
+    for canonical, alternatives in aliases.items():
+        if canonical not in df.columns:
+            for alternative in alternatives:
+                if alternative in df.columns:
+                    df = df.rename(
+                        columns={alternative: canonical}
+                    )
+                    break
 
-    if "nombre" not in gdf.columns:
-        gdf["nombre"] = [
-            f"Registro {i + 1}" for i in range(len(gdf))
+    # İsim alanı zorunludur.
+    if "name" not in df.columns:
+        df["name"] = [
+            f"Kayıt {i + 1}"
+            for i in range(len(df))
         ]
 
-    if "descripcion" not in gdf.columns:
-        gdf["descripcion"] = ""
+    df["name"] = (
+        df["name"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
 
-    if "grupo" not in gdf.columns:
-        gdf["grupo"] = "General"
+    empty_names = df["name"].eq("")
+    if empty_names.any():
+        df.loc[empty_names, "name"] = [
+            f"Kayıt {i + 1}"
+            for i in range(int(empty_names.sum()))
+        ]
 
-    gdf["nombre"] = gdf["nombre"].fillna("").astype(str)
-    gdf["descripcion"] = gdf["descripcion"].fillna("").astype(str)
-    gdf["grupo"] = gdf["grupo"].fillna("General").astype(str)
-    gdf["tipo_geometria"] = gdf.geometry.geom_type
+    # İsteğe bağlı alanlar için güvenli varsayılanlar.
+    if "description" not in df.columns:
+        df["description"] = ""
 
-    minx, miny, maxx, maxy = gdf.total_bounds
-    if minx < -180 or maxx > 180 or miny < -90 or maxy > 90:
-        raise ValueError("Koordinatlar EPSG:4326 aralığının dışında.")
+    if "group" not in df.columns:
+        df["group"] = "Sınıflandırılmamış"
 
-    return gdf.reset_index(drop=True)
+    if "color" not in df.columns:
+        df["color"] = DEFAULT_COLOR
+
+    if "label" not in df.columns:
+        df["label"] = df["name"]
+
+    df["description"] = (
+        df["description"].fillna("").astype(str)
+    )
+    df["group"] = (
+        df["group"]
+        .fillna("Sınıflandırılmamış")
+        .astype(str)
+    )
+    df["color"] = (
+        df["color"]
+        .fillna(DEFAULT_COLOR)
+        .astype(str)
+    )
+    df["label"] = (
+        df["label"]
+        .fillna("")
+        .astype(str)
+    )
+
+    # GeoJSON geometrileri bulunmalıdır.
+    if "geometry" not in df.columns:
+        raise DataValidationError(
+            "Geometri alanı bulunamadı. "
+            "GeoJSON içinde geometry alanı olmalı."
+        )
+
+    if df.geometry.isna().any():
+        count = int(df.geometry.isna().sum())
+        raise DataValidationError(
+            f"{count} kayıtta geometri eksik."
+        )
+
+    if df.geometry.is_empty.any():
+        count = int(df.geometry.is_empty.sum())
+        raise DataValidationError(
+            f"{count} kayıtta geometri boş."
+        )
+
+    if df.crs is None:
+        df = df.set_crs(DEFAULT_CRS, allow_override=True)
+
+    # Harita katmanları için uyumluluk sütunları.
+    df["nombre"] = df["name"]
+    df["descripcion"] = df["description"]
+    df["grupo"] = df["group"]
+    df["tipo_geometria"] = df.geometry.geom_type
+
+    # Genişlik ve uzunluk gibi geometrik ölçümler için değil,
+    # yalnızca coğrafi gösterim için WGS84 kullanılır.
+    return df
 
 
-def load_default_data() -> gpd.GeoDataFrame:
-    """Depodaki modules/hazar_ogur.geojson dosyasını yükler."""
-    if not DATA_FILE.is_file():
-        raise FileNotFoundError(
-            f"Varsayılan GeoJSON bulunamadı: {DATA_FILE}"
+# ============================================================
+# GEOJSON OKUMA
+# ============================================================
+
+def _read_geojson_bytes(
+    content: bytes,
+) -> gpd.GeoDataFrame:
+    """GeoJSON içeriğini doğrulayarak GeoDataFrame'e dönüştürür."""
+
+    try:
+        document: Any = json.loads(content.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DataValidationError(
+            f"GeoJSON geçerli UTF-8 JSON değil: {exc}"
+        ) from exc
+
+    if not isinstance(document, dict):
+        raise DataValidationError(
+            "GeoJSON kök nesnesi bir JSON nesnesi olmalıdır."
+        )
+
+    if document.get("type") == "FeatureCollection":
+        features = document.get("features")
+
+        if not isinstance(features, list):
+            raise DataValidationError(
+                "FeatureCollection içinde features dizisi bulunmalıdır."
+            )
+
+        for index, feature in enumerate(features):
+            if not isinstance(feature, dict):
+                raise DataValidationError(
+                    f"{index + 1}. özellik geçerli bir nesne değil."
+                )
+
+            if feature.get("type") != "Feature":
+                raise DataValidationError(
+                    f"{index + 1}. özellik type='Feature' olmalıdır."
+                )
+
+            geometry = feature.get("geometry")
+            if geometry is not None:
+                try:
+                    shape(geometry)
+                except Exception as exc:
+                    raise DataValidationError(
+                        f"{index + 1}. özelliğin geometrisi geçersiz."
+                    ) from exc
+
+        if not features:
+            raise DataValidationError(
+                "FeatureCollection içinde kayıt bulunamadı."
+            )
+
+    elif document.get("type") == "Feature":
+        document = {
+            "type": "FeatureCollection",
+            "features": [document],
+        }
+
+    else:
+        raise DataValidationError(
+            "Dosya bir FeatureCollection veya Feature olmalıdır."
         )
 
     try:
-        gdf = gpd.read_file(DATA_FILE)
-        return _normalise_gdf(gdf)
+        return gpd.GeoDataFrame.from_features(
+            document["features"],
+            crs=DEFAULT_CRS,
+        )
     except Exception as exc:
-        raise ValueError(
-            f"Varsayılan GeoJSON yüklenemedi: {exc}"
+        raise DataValidationError(
+            f"GeoJSON GeoDataFrame'e dönüştürülemedi: {exc}"
+        ) from exc
+
+
+def _read_geojson_path(
+    path: Path,
+) -> gpd.GeoDataFrame:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Varsayılan GeoJSON bulunamadı: {path}"
+        )
+
+    if not path.is_file():
+        raise DataValidationError(
+            f"Veri yolu bir dosya değil: {path}"
+        )
+
+    return _read_geojson_bytes(path.read_bytes())
+
+
+# ============================================================
+# CSV OKUMA
+# ============================================================
+
+def _read_csv_bytes(
+    content: bytes,
+) -> gpd.GeoDataFrame:
+    try:
+        df = pd.read_csv(BytesIO(content))
+    except Exception as exc:
+        raise DataValidationError(
+            f"CSV dosyası okunamadı: {exc}"
+        ) from exc
+
+    df = _normalise_column_names(
+        gpd.GeoDataFrame(df)
+    )
+
+    # WKT geometri sütunu varsa kullan.
+    if "geometry" in df.columns:
+        try:
+            df["geometry"] = df["geometry"].apply(
+                lambda value: (
+                    wkt.loads(value)
+                    if isinstance(value, str) and value.strip()
+                    else value
+                )
+            )
+        except Exception as exc:
+            raise DataValidationError(
+                f"CSV geometry sütununda geçersiz WKT var: {exc}"
+            ) from exc
+
+        return gpd.GeoDataFrame(
+            df,
+            geometry="geometry",
+            crs=DEFAULT_CRS,
+        )
+
+    # Alternatif: longitude/latitude veya lon/lat sütunları.
+    lower_to_original = {
+        str(column).strip().lower(): column
+        for column in df.columns
+    }
+
+    longitude_key = next(
+        (
+            lower_to_original[key]
+            for key in ("longitude", "lon", "lng", "boylam")
+            if key in lower_to_original
+        ),
+        None,
+    )
+
+    latitude_key = next(
+        (
+            lower_to_original[key]
+            for key in ("latitude", "lat", "enlem")
+            if key in lower_to_original
+        ),
+        None,
+    )
+
+    if longitude_key is None or latitude_key is None:
+        raise DataValidationError(
+            "CSV dosyasında geometry (WKT) veya "
+            "longitude/latitude sütunları gerekli."
+        )
+
+    try:
+        longitude = pd.to_numeric(
+            df[longitude_key], errors="raise"
+        )
+        latitude = pd.to_numeric(
+            df[latitude_key], errors="raise"
+        )
+    except Exception as exc:
+        raise DataValidationError(
+            "Boylam ve enlem sayısal değerlerden oluşmalıdır."
+        ) from exc
+
+    if (
+        longitude.isna().any()
+        or latitude.isna().any()
+        or (~longitude.between(-180, 180)).any()
+        or (~latitude.between(-90, 90)).any()
+    ):
+        raise DataValidationError(
+            "Koordinatlar geçersiz. Boylam -180..180, "
+            "enlem -90..90 aralığında olmalıdır."
+        )
+
+    from shapely.geometry import Point
+
+    geometry = [
+        Point(float(lon), float(lat))
+        for lon, lat in zip(longitude, latitude)
+    ]
+
+    return gpd.GeoDataFrame(
+        df,
+        geometry=geometry,
+        crs=DEFAULT_CRS,
+    )
+
+
+# ============================================================
+# DIŞA AÇIK YÜKLEME FONKSİYONLARI
+# ============================================================
+
+def load_default_data() -> gpd.GeoDataFrame:
+    """
+    modules/hazar_ogur.geojson dosyasını yükler.
+
+    Argüman almaz. Kullanım:
+        gdf = load_default_data()
+    """
+
+    try:
+        data = _read_geojson_path(DATA_FILE)
+        return _normalise_gdf(data)
+    except (FileNotFoundError, DataValidationError):
+        raise
+    except Exception as exc:
+        raise DataValidationError(
+            f"Varsayılan veri yüklenemedi: {exc}"
         ) from exc
 
 
 def validate_and_load_uploaded_file(
     uploaded_file,
-) -> tuple[gpd.GeoDataFrame | None, str]:
-    """GeoJSON, JSON veya koordinat/WKT içeren CSV dosyasını yükler."""
-    if uploaded_file is None:
-        return None, "Dosya seçilmedi."
+) -> gpd.GeoDataFrame:
+    """
+    Streamlit dosya yükleme nesnesini okur.
 
-    filename = uploaded_file.name.lower()
+    Desteklenen dosyalar: .geojson, .json, .csv
+    """
+
+    if uploaded_file is None:
+        raise DataValidationError(
+            "Yüklenecek dosya seçilmedi."
+        )
+
+    filename = Path(
+        str(getattr(uploaded_file, "name", ""))
+    ).name
+
+    suffix = Path(filename).suffix.lower()
+
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise DataValidationError(
+            "Desteklenmeyen dosya biçimi. "
+            "GeoJSON, JSON veya CSV kullanın."
+        )
+
     content = uploaded_file.getvalue()
 
     if not content:
-        return None, "Dosya boş."
+        raise DataValidationError(
+            "Yüklenen dosya boş."
+        )
 
-    try:
-        if filename.endswith((".geojson", ".json")):
-            data = json.loads(content.decode("utf-8-sig"))
+    if suffix in {".geojson", ".json"}:
+        data = _read_geojson_bytes(content)
+    else:
+        data = _read_csv_bytes(content)
 
-            if data.get("type") == "FeatureCollection":
-                gdf = gpd.read_file(
-                    BytesIO(content), driver="GeoJSON"
-                )
-            elif data.get("type") == "Feature":
-                gdf = gpd.GeoDataFrame.from_features(
-                    [data], crs=CRS
-                )
-            else:
-                return None, "Geçerli bir GeoJSON Feature veya FeatureCollection gerekli."
-
-        elif filename.endswith(".csv"):
-            df = pd.read_csv(StringIO(content.decode("utf-8-sig")))
-            df.columns = [str(c).strip().lower() for c in df.columns]
-
-            if df.empty:
-                return None, "CSV dosyasında kayıt yok."
-
-            if "geometry_wkt" in df.columns:
-                geometries = df["geometry_wkt"].apply(
-                    lambda value: (
-                        wkt.loads(value)
-                        if pd.notna(value) and str(value).strip()
-                        else None
-                    )
-                )
-                attributes = df.drop(columns=["geometry_wkt"])
-                gdf = gpd.GeoDataFrame(
-                    attributes, geometry=geometries, crs=CRS
-                )
-            else:
-                lon_col = next(
-                    (c for c in ("lon", "lng", "longitude", "longitud")
-                     if c in df.columns),
-                    None,
-                )
-                lat_col = next(
-                    (c for c in ("lat", "latitude", "latitud")
-                     if c in df.columns),
-                    None,
-                )
-
-                if lon_col is None or lat_col is None:
-                    return None, (
-                        "CSV için lon/lat, longitude/latitude veya "
-                        "geometry_wkt sütunları gerekli."
-                    )
-
-                df[lon_col] = pd.to_numeric(df[lon_col], errors="coerce")
-                df[lat_col] = pd.to_numeric(df[lat_col], errors="coerce")
-
-                valid = (
-                    df[lon_col].between(-180, 180)
-                    & df[lat_col].between(-90, 90)
-                )
-                if not valid.all():
-                    return None, "CSV'de geçersiz koordinatlar var."
-
-                gdf = gpd.GeoDataFrame(
-                    df,
-                    geometry=gpd.points_from_xy(
-                        df[lon_col], df[lat_col]
-                    ),
-                    crs=CRS,
-                )
-        else:
-            return None, "Yalnızca .geojson, .json ve .csv desteklenir."
-
-        gdf = _normalise_gdf(gdf)
-        return gdf, f"{len(gdf)} kayıt başarıyla yüklendi."
-
-    except Exception as exc:
-        return None, f"Dosya işlenemedi: {exc}"
+    return _normalise_gdf(data)
 
 
-def export_geojson(gdf: gpd.GeoDataFrame) -> bytes:
-    """GeoJSON çıktısı üretir."""
-    export_gdf = gdf.to_crs(CRS) if gdf.crs else gdf.set_crs(CRS)
-    return export_gdf.to_json().encode("utf-8")
+def export_geojson(
+    gdf: gpd.GeoDataFrame,
+) -> str:
+    """GeoDataFrame'i GeoJSON metnine dönüştürür."""
+
+    data = _normalise_gdf(gdf)
+
+    return data.to_json(
+        drop_id=False,
+        ensure_ascii=False,
+    )
 
 
-def export_csv(gdf: gpd.GeoDataFrame) -> bytes:
-    """Öznitelikleri ve geometriyi WKT biçiminde CSV'ye aktarır."""
-    df = pd.DataFrame(gdf.drop(columns="geometry", errors="ignore")).copy()
-    if "geometry" in gdf.columns:
-        df["geometry_wkt"] = [
-            geom.wkt if geom is not None else ""
-            for geom in gdf.geometry
-        ]
+def export_csv(
+    gdf: gpd.GeoDataFrame,
+) -> str:
+    """Geometriyi WKT biçiminde içeren CSV üretir."""
 
-    return df.to_csv(index=False).encode("utf-8-sig")
+    data = _normalise_gdf(gdf).copy()
+    data["geometry"] = data.geometry.to_wkt()
+
+    return data.to_csv(index=False)
+
+
+def get_data_summary(
+    gdf: gpd.GeoDataFrame,
+) -> dict[str, Any]:
+    """Arayüzde kullanılabilecek temel veri özeti."""
+
+    data = _normalise_gdf(gdf)
+
+    return {
+        "record_count": int(len(data)),
+        "geometry_types": sorted(
+            data.geometry.geom_type.dropna().unique().tolist()
+        ),
+        "groups": sorted(
+            data["group"].dropna().unique().tolist()
+        ),
+        "crs": str(data.crs),
+        "columns": data.columns.tolist(),
+    }
