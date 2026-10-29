@@ -1,193 +1,228 @@
 from __future__ import annotations
+
 import json
 from io import BytesIO
+from typing import Any
+
 import folium
 import geopandas as gpd
 import pandas as pd
 import requests
 import streamlit as st
 from folium.plugins import Fullscreen, MousePosition
-from shapely.geometry import LineString, Point
 from streamlit_folium import st_folium
 
-
-# ============================================================
-# UYGULAMA AYARLARI
-# ============================================================
+# ------------------------------------------------------------
+# Streamlit Cloud / Hazar-Oğur şematik güzergâh haritası
+# Bu çizimler tarihsel olarak doğrulanmış rotalar değildir.
+# ------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Hazar ve Ogur - Coğrafi Analiz",
+    page_title="Hazar ve Oğur — Şematik Güzergâhlar",
     page_icon="🗺️",
     layout="wide",
 )
 
-CRS = "EPSG:4326"
-
-# Natural Earth kamuya açık coğrafi veri deposu.
-COUNTRIES_URL = (
-    "https://raw.githubusercontent.com/nvkelso/"
-    "natural-earth-vector/master/geojson/"
-    "ne_110m_admin_0_countries.geojson"
+DISCLAIMER = (
+    "Bu güzergâhlar araştırma amaçlı şematik gösterimlerdir; "
+    "tarihsel olarak doğrulanmış rotalar oldukları varsayılmamalıdır."
 )
 
-MIGRATIONS = [
-    ("1. Ujur / Uygur", 102.0, 47.0, 75.0, 45.0,
-     "#2563eb", "Orkhon -> Jetisu", 1.5, 0.8),
-    ("2. Tauris", 34.0, 45.0, 34.0, 45.0,
-     "#059669", "Kirim (yerel)", 0.9, -1.7),
-    ("3. Avar", 47.0, 42.0, 19.0, 47.0,
-     "#dc2626", "Kafkasya -> Pannonia", 0.9, 0.6),
-    ("4. Uauz / Oguz", 60.0, 43.0, 35.0, 39.0,
-     "#d97706", "Aral/Hazar -> Anadolu", 0.9, -1.5),
-    ("5. Bizal / Barsil", 42.0, 48.0, 42.0, 48.0,
-     "#7c3aed", "Volga-Don / K. Kafkasya", 1.0, 1.2),
-    ("6. Tarna", 47.5, 42.9, 47.5, 42.9,
-     "#db2777", "Dagistan / Tarku", 1.0, -1.4),
-    ("7. Khazar", 48.0, 46.0, 48.0, 46.0,
-     "#4f46e5", "Asagi Volga / Itil", 1.6, 0.7),
-    ("8. Janur / Zagur", 39.0, 45.2, 39.0, 45.2,
-     "#0891b2", "Azak / Kuban", -7.2, 0.9),
-    ("9. Bulgar", 39.0, 46.8, 49.0, 55.0,
-     "#ea580c", "Kuban -> Volga", 1.0, 1.0),
-    ("10. Sabir / Suvar", 75.0, 55.0, 47.0, 43.0,
-     "#16a34a", "Bati Sibirya -> Kafkasya", 1.0, -1.4),
+# Şematik örnek veriler. Koordinatlar güzergâh iddiası veya tarihsel kanıt değildir.
+ROUTES: list[dict[str, Any]] = [
+    {
+        "id": "route_1",
+        "name": "Karadeniz bozkır kuşağı (şematik)",
+        "category": "Şematik güzergâh",
+        "description": "Araştırma amaçlı temsili çizim; tarihsel rota doğrulaması değildir.",
+        "color": "#d62728",
+        "coordinates": [
+            [48.0, 42.0],
+            [46.5, 38.5],
+            [45.0, 34.0],
+            [43.5, 29.5],
+        ],
+    },
+    {
+        "id": "route_2",
+        "name": "Hazar çevresi (şematik)",
+        "category": "Şematik güzergâh",
+        "description": "Araştırma amaçlı temsili çizim; tarihsel rota doğrulaması değildir.",
+        "color": "#1f77b4",
+        "coordinates": [
+            [48.0, 52.0],
+            [45.0, 49.0],
+            [42.0, 46.0],
+            [39.0, 43.0],
+        ],
+    },
+    {
+        "id": "route_3",
+        "name": "Orta Asya–batı yönü (şematik)",
+        "category": "Şematik güzergâh",
+        "description": "Araştırma amaçlı temsili çizim; tarihsel rota doğrulaması değildir.",
+        "color": "#2ca02c",
+        "coordinates": [
+            [43.0, 78.0],
+            [44.0, 68.0],
+            [45.0, 59.0],
+            [46.0, 50.0],
+        ],
+    },
 ]
 
-COLUMNS = [
-    "name", "desc", "color", "is_migration",
-    "slon", "slat", "elon", "elat", "dx", "dy",
-    "geometry",
-]
+COUNTRIES_URL = (
+    "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/"
+    "master/geojson/ne_110m_admin_0_countries.geojson"
+)
 
 
-# ============================================================
-# VERİ HAZIRLAMA
-# ============================================================
-
-@st.cache_data
-def build_gdf(selected_flags: tuple[bool, ...]) -> gpd.GeoDataFrame:
-    records = []
-
-    for index, item in enumerate(MIGRATIONS):
-        if not selected_flags[index]:
-            continue
-
-        (
-            name, slon, slat, elon, elat,
-            color, desc, dx, dy,
-        ) = item
-
-        is_migration = (slon, slat) != (elon, elat)
-
-        geometry = (
-            LineString([(slon, slat), (elon, elat)])
-            if is_migration
-            else Point(slon, slat)
-        )
-
-        records.append({
-            "name": name,
-            "desc": desc,
-            "color": color,
-            "is_migration": is_migration,
-            "slon": slon,
-            "slat": slat,
-            "elon": elon,
-            "elat": elat,
-            "dx": dx,
-            "dy": dy,
-            "geometry": geometry,
-        })
-
-    # Boş GeoDataFrame de doğru CRS ve geometri tipine sahip olur.
-    if not records:
-        return gpd.GeoDataFrame(
-            {
-                column: pd.Series(dtype="object")
-                for column in COLUMNS
-                if column != "geometry"
-            },
-            geometry=gpd.GeoSeries([], crs=CRS),
-            crs=CRS,
-        )
-
-    return gpd.GeoDataFrame(
-        records,
-        geometry="geometry",
-        crs=CRS,
-    )
-
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def load_countries() -> tuple[str | None, str | None]:
-    """Ülke sınırlarını indir; hata olursa hata mesajını döndür."""
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
+def load_country_boundaries() -> gpd.GeoDataFrame | None:
+    """Ülke sınırlarını internetten yükler; ağ hatasında None döndürür."""
     try:
         response = requests.get(
             COUNTRIES_URL,
-            timeout=25,
-            headers={"User-Agent": "HazarOgurGeoApp/1.0"},
+            timeout=(5, 15),
+            headers={"User-Agent": "Hazar-Ogur-Research-Map/1.0"},
         )
         response.raise_for_status()
+        payload = response.json()
+        features = payload.get("features", [])
+        if not features:
+            return None
 
-        # Yanıtın gerçekten GeoJSON olup olmadığını kontrol et.
-        data = response.json()
-        if data.get("type") != "FeatureCollection":
-            return None, "Ülke sınırı kaynağı geçerli GeoJSON döndürmedi."
+        countries = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
+        if countries.empty or "geometry" not in countries:
+            return None
 
-        return json.dumps(data), None
+        # Natural Earth sürümlerinde ülke alanının adı değişebilir.
+        name_field = next(
+            (field for field in ("ADMIN", "name", "NAME", "SOVEREIGNT")
+             if field in countries.columns),
+            None,
+        )
+        if name_field and name_field != "ADMIN":
+            countries = countries.rename(columns={name_field: "ADMIN"})
+        if "ADMIN" not in countries.columns:
+            countries["ADMIN"] = "Ülke"
 
-    except (requests.RequestException, ValueError) as exc:
-        return None, f"Ülke sınırları yüklenemedi: {exc}"
+        return countries[["ADMIN", "geometry"]]
+    except Exception:
+        return None
+
+
+def make_route_gdf(route_rows: list[dict[str, Any]]) -> gpd.GeoDataFrame:
+    """Seçilen şematik rotalardan WGS84 GeoDataFrame üretir."""
+    from shapely.geometry import LineString, Point
+
+    records: list[dict[str, Any]] = []
+    for route in route_rows:
+        coords = route.get("coordinates", [])
+        if len(coords) < 2:
+            continue
+        # Kaynak koordinatlar [enlem, boylam]; Shapely x/y = [boylam, enlem].
+        line = LineString([(lon, lat) for lat, lon in coords])
+        records.append(
+            {
+                "id": route["id"],
+                "name": route["name"],
+                "category": route["category"],
+                "description": route["description"],
+                "color": route["color"],
+                "geometry": line,
+                "start_point": Point(coords[0][1], coords[0][0]),
+                "end_point": Point(coords[-1][1], coords[-1][0]),
+            }
+        )
+
+    if not records:
+        return gpd.GeoDataFrame(
+            {
+                "id": pd.Series(dtype="str"),
+                "name": pd.Series(dtype="str"),
+                "category": pd.Series(dtype="str"),
+                "description": pd.Series(dtype="str"),
+                "color": pd.Series(dtype="str"),
+                "geometry": gpd.GeoSeries([], crs="EPSG:4326"),
+            },
+            geometry="geometry",
+            crs="EPSG:4326",
+        )
+
+    return gpd.GeoDataFrame(records, geometry="geometry", crs="EPSG:4326")
+
+
+def add_arrow_if_available(line: folium.PolyLine, color: str, target: folium.FeatureGroup) -> None:
+    """Ok çizgisi eklemeyi dener; eklenti hatası ana haritayı bozmaz."""
+    try:
+        from folium.plugins import PolyLineTextPath
+
+        PolyLineTextPath(
+            line,
+            "➤",
+            repeat=True,
+            offset=7,
+            attributes={
+                "fill": color,
+                "font-weight": "bold",
+                "font-size": "13",
+            },
+        ).add_to(target)
+    except Exception:
+        # Ok eklentisi/JS desteklenmese de temel rota çizgisi görünür.
+        pass
 
 
 def make_map(
-    gdf: gpd.GeoDataFrame,
+    route_rows: list[dict[str, Any]],
+    basemap: str,
     show_countries: bool,
-    show_lines: bool,
     show_points: bool,
     show_labels: bool,
-    show_basemap: bool,
+    show_arrows: bool,
 ) -> folium.Map:
-    """Haritayı katmanlarla oluştur."""
-
     fmap = folium.Map(
-        location=[47, 55],
+        location=[43.5, 48.0],
         zoom_start=4,
         tiles=None,
         control_scale=True,
         prefer_canvas=True,
     )
 
-    if show_basemap:
-        folium.TileLayer(
-            tiles="OpenStreetMap",
-            name="OpenStreetMap taban haritası",
-            overlay=False,
-            control=True,
-            show=True,
-        ).add_to(fmap)
-
-    # Alternatif bir sade harita katmanı.
+    tile_choices = {
+        "OpenStreetMap": {
+            "tiles": "OpenStreetMap",
+            "attr": None,
+        },
+        "CartoDB Positron": {
+            "tiles": "CartoDB positron",
+            "attr": None,
+        },
+        "CartoDB Dark Matter": {
+            "tiles": "CartoDB dark_matter",
+            "attr": None,
+        },
+    }
+    tile = tile_choices.get(basemap, tile_choices["OpenStreetMap"])
     folium.TileLayer(
-        tiles="CartoDB positron",
-        name="Sade taban haritası",
+        tiles=tile["tiles"],
+        name=basemap,
         overlay=False,
         control=True,
-        show=False,
     ).add_to(fmap)
 
     if show_countries:
-        countries_json, error = load_countries()
-
-        if countries_json:
+        countries = load_country_boundaries()
+        if countries is not None and not countries.empty:
             folium.GeoJson(
-                data=countries_json,
+                data=json.loads(countries.to_json(to_wgs84=True)),
                 name="Ülke sınırları (Natural Earth)",
-                style_function=lambda feature: {
-                    "color": "#475569",
-                    "weight": 0.8,
-                    "fillColor": "#cbd5e1",
-                    "fillOpacity": 0.10,
+                style_function=lambda _feature: {
+                    "fillColor": "#d8d8d8",
+                    "color": "#666666",
+                    "weight": 0.7,
+                    "fillOpacity": 0.08,
                 },
                 tooltip=folium.GeoJsonTooltip(
                     fields=["ADMIN"],
@@ -195,281 +230,210 @@ def make_map(
                     sticky=True,
                 ),
             ).add_to(fmap)
-        elif error:
-            st.warning(error)
+        else:
+            st.warning(
+                "Ülke sınırları kaynağına erişilemedi. Taban haritası ve seçili "
+                "şematik rotalar yine kullanılabilir."
+            )
 
-    lines_layer = folium.FeatureGroup(
-        name="Göç çizgileri", show=show_lines
-    )
-    points_layer = folium.FeatureGroup(
-        name="Başlangıç ve bitiş noktaları", show=show_points
-    )
-    labels_layer = folium.FeatureGroup(
-        name="Etiketler", show=show_labels
-    )
+    for route in route_rows:
+        # Folium koordinatları [enlem, boylam] bekler.
+        coordinates = route["coordinates"]
+        group = folium.FeatureGroup(name=route["name"], show=True)
 
-    for _, row in gdf.iterrows():
-        name = str(row["name"])
-        desc = str(row["desc"])
-        color = str(row["color"])
+        line = folium.PolyLine(
+            locations=coordinates,
+            color=route["color"],
+            weight=4,
+            opacity=0.9,
+            tooltip=route["name"],
+        ).add_to(group)
 
-        start = [float(row["slat"]), float(row["slon"])]
-        end = [float(row["elat"]), float(row["elon"])]
-
-        popup_html = (
-            f"<b>{name}</b><br>"
-            f"{desc}<br>"
-            f"Başlangıç: {row['slon']}, {row['slat']}<br>"
-            f"Bitiş: {row['elon']}, {row['elat']}<br>"
-            f"Geometri: "
-            f"{'Çizgi' if row['is_migration'] else 'Nokta'}"
-        )
-
-        if bool(row["is_migration"]) and show_lines:
-            folium.PolyLine(
-                locations=[start, end],
-                color=color,
-                weight=3,
-                opacity=0.9,
-                tooltip=name,
-                popup=folium.Popup(popup_html, max_width=320),
-            ).add_to(lines_layer)
-
-            # Başlangıç -> bitiş yönünü gösteren ok.
-            folium.PolyLineTextPath(
-                # Bu eklenti yoksa ana çizgi yine görünür.
-                folium.PolyLine(
-                    locations=[start, end],
-                    color=color,
-                    weight=0,
-                    opacity=0,
-                ),
-                "  ▶  ",
-                repeat=True,
-                offset=7,
-                attributes={"fill": color, "font-weight": "bold"},
-            ).add_to(lines_layer)
+        if show_arrows:
+            add_arrow_if_available(line, route["color"], group)
 
         if show_points:
-            if bool(row["is_migration"]):
+            for label, point in (
+                ("Başlangıç", coordinates[0]),
+                ("Bitiş", coordinates[-1]),
+            ):
                 folium.CircleMarker(
-                    location=start,
+                    location=point,
                     radius=5,
-                    color="white",
-                    weight=2,
+                    color=route["color"],
                     fill=True,
-                    fill_color=color,
-                    fill_opacity=1,
-                    tooltip=f"{name} — başlangıç",
-                ).add_to(points_layer)
-
-                folium.Marker(
-                    location=end,
-                    tooltip=f"{name} — bitiş",
-                    popup=folium.Popup(popup_html, max_width=320),
-                    icon=folium.Icon(
-                        color="blue",
-                        icon="flag",
-                        prefix="fa",
-                    ),
-                ).add_to(points_layer)
-            else:
-                folium.CircleMarker(
-                    location=start,
-                    radius=7,
-                    color="white",
-                    weight=2,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=1,
-                    tooltip=name,
-                    popup=folium.Popup(popup_html, max_width=320),
-                ).add_to(points_layer)
+                    fill_opacity=0.95,
+                    tooltip=f'{route["name"]} — {label}',
+                ).add_to(group)
 
         if show_labels:
-            label_location = (
-                end if bool(row["is_migration"]) else start
-            )
+            midpoint = coordinates[len(coordinates) // 2]
             folium.Marker(
-                location=label_location,
-                tooltip=name,
+                location=midpoint,
                 icon=folium.DivIcon(
                     html=(
-                        '<div style="'
-                        f'color:{color};'
-                        'font-size:11px;'
-                        'font-weight:bold;'
-                        'white-space:nowrap;'
-                        'background:rgba(255,255,255,0.88);'
-                        'border:1px solid #cbd5e1;'
-                        'border-radius:4px;'
-                        'padding:3px 5px;'
-                        '">'
-                        f'{name}<br><small>{desc}</small>'
-                        '</div>'
+                        '<div style="font-size:11px;font-weight:600;'
+                        'color:#222;background:rgba(255,255,255,.82);'
+                        'padding:2px 4px;border-radius:3px;white-space:nowrap;">'
+                        f'{route["name"]}</div>'
                     )
                 ),
-            ).add_to(labels_layer)
+            ).add_to(group)
 
-    if show_lines:
-        lines_layer.add_to(fmap)
+        group.add_to(fmap)
 
-    if show_points:
-        points_layer.add_to(fmap)
-
-    if show_labels:
-        labels_layer.add_to(fmap)
-
-    folium.LayerControl(collapsed=False).add_to(fmap)
-    Fullscreen(position="topleft").add_to(fmap)
+    Fullscreen(position="topleft", title="Tam ekran", title_cancel="Kapat").add_to(fmap)
     MousePosition(
         position="bottomleft",
         separator=" | ",
-        prefix="Koordinat:",
+        prefix="Koordinat",
         num_digits=4,
     ).add_to(fmap)
+    folium.LayerControl(collapsed=False).add_to(fmap)
+
+    # Seçili rotalar varsa haritayı onların sınırlarına yaklaştır.
+    if route_rows:
+        all_points = [point for route in route_rows for point in route["coordinates"]]
+        lats = [p[0] for p in all_points]
+        lons = [p[1] for p in all_points]
+        fmap.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]], padding=(25, 25))
 
     return fmap
 
 
-# ============================================================
-# STREAMLIT ARAYÜZÜ
-# ============================================================
+def make_geojson(route_gdf: gpd.GeoDataFrame) -> bytes:
+    """GeoJSON standardına uygun WGS84 çıktı; boş seçimde FeatureCollection boş olur."""
+    if route_gdf.empty:
+        payload = {"type": "FeatureCollection", "features": []}
+        return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
-st.title("🗺️ Hazar ve Ogur — Coğrafi Analiz")
-st.caption(
-    "GeoPandas · EPSG:4326 · Folium · Natural Earth · OpenStreetMap"
-)
+    safe = route_gdf[["id", "name", "category", "description", "color", "geometry"]].copy()
+    safe = safe.set_crs("EPSG:4326", allow_override=True).to_crs("EPSG:4326")
+    return safe.to_json(to_wgs84=True, drop_id=False).encode("utf-8")
+
+
+def make_csv(route_rows: list[dict[str, Any]]) -> bytes:
+    """CSV, rota koordinatlarını açıkça enlem/boylam çiftleri olarak taşır."""
+    rows = []
+    for route in route_rows:
+        rows.append(
+            {
+                "id": route["id"],
+                "name": route["name"],
+                "category": route["category"],
+                "description": route["description"],
+                "color": route["color"],
+                "coordinates_lat_lon_json": json.dumps(
+                    route["coordinates"], ensure_ascii=False
+                ),
+            }
+        )
+    columns = [
+        "id", "name", "category", "description", "color",
+        "coordinates_lat_lon_json",
+    ]
+    return pd.DataFrame(rows, columns=columns).to_csv(index=False).encode("utf-8-sig")
+
+
+st.title("🗺️ Hazar ve Oğur — Şematik Güzergâh Haritası")
+st.warning(DISCLAIMER)
 
 with st.sidebar:
-    st.header("⚙️ Harita katmanları")
-
-    show_basemap = st.checkbox("OpenStreetMap tabanı", value=True)
-    show_countries = st.checkbox("Ülke sınırları", value=True)
-    show_lines = st.checkbox("Göç çizgileri", value=True)
-    show_points = st.checkbox("Başlangıç / bitiş noktaları", value=True)
-    show_labels = st.checkbox("Etiketler", value=True)
+    st.header("Harita ayarları")
+    basemap = st.selectbox(
+        "Taban haritası",
+        ["OpenStreetMap", "CartoDB Positron", "CartoDB Dark Matter"],
+        index=0,
+    )
+    show_countries = st.checkbox("Ülke sınırlarını göster", value=True)
+    show_points = st.checkbox("Başlangıç/bitiş noktalarını göster", value=True)
+    show_labels = st.checkbox("Rota etiketlerini göster", value=True)
+    show_arrows = st.checkbox("Yön oklarını göster", value=True)
 
     st.divider()
-    st.subheader("Kayıt seçimi")
+    st.subheader("Güzergâh seçimi")
+    select_all = st.button("Tümünü seç", use_container_width=True)
+    deselect_all = st.button("Seçimi temizle", use_container_width=True)
 
-    selected_flags = tuple(
-        st.checkbox(item[0], value=True, key=f"record_{i}")
-        for i, item in enumerate(MIGRATIONS)
+    all_route_ids = [r["id"] for r in ROUTES]
+    if "route_multiselect" not in st.session_state:
+        st.session_state.route_multiselect = all_route_ids.copy()
+
+    # Widget oluşturulmadan önce aynı widget anahtarını güncellemek güvenlidir.
+    if select_all:
+        st.session_state.route_multiselect = all_route_ids.copy()
+    if deselect_all:
+        st.session_state.route_multiselect = []
+
+    selected_ids = st.multiselect(
+        "Gösterilecek güzergâhlar",
+        options=all_route_ids,
+        format_func=lambda route_id: next(
+            (r["name"] for r in ROUTES if r["id"] == route_id), route_id
+        ),
+        key="route_multiselect",
     )
 
-    if st.button("Tüm kayıtları seç"):
-        for i in range(len(MIGRATIONS)):
-            st.session_state[f"record_{i}"] = True
-        st.rerun()
+selected_routes = [r for r in ROUTES if r["id"] in selected_ids]
+gdf = make_route_gdf(selected_routes)
 
-    if st.button("Tüm seçimleri kaldır"):
-        for i in range(len(MIGRATIONS)):
-            st.session_state[f"record_{i}"] = False
-        st.rerun()
+left, right = st.columns([3, 1], gap="large")
+with left:
+    if not selected_routes:
+        st.info("Hiç güzergâh seçilmedi. Taban haritası açık kalır; dışa aktarımlar boş olur.")
 
-    # Rerun sonrasında güncel seçimleri oku.
-    selected_flags = tuple(
-        bool(st.session_state.get(f"record_{i}", True))
-        for i in range(len(MIGRATIONS))
+    fmap = make_map(
+        route_rows=selected_routes,
+        basemap=basemap,
+        show_countries=show_countries,
+        show_points=show_points,
+        show_labels=show_labels,
+        show_arrows=show_arrows,
     )
-
-gdf = build_gdf(selected_flags)
-
-col1, col2, col3 = st.columns(3)
-col1.metric("Seçili kayıt", len(gdf))
-col2.metric("Göç çizgisi", int(gdf["is_migration"].sum()))
-col3.metric("Yerleşim noktası", int((~gdf["is_migration"]).sum()))
-
-if gdf.empty:
-    st.warning(
-        "Hiçbir kayıt seçilmedi. Harita üzerinde göç verisi gösterilmiyor. "
-        "Sol menüden kayıt seçebilir veya tüm kayıtları yeniden açabilirsin."
-    )
-else:
-    st.info(
-        "Bu güzergâhlar araştırma amaçlı şematik gösterimlerdir; "
-        "tarihsel olarak doğrulanmış rotalar oldukları varsayılmamalıdır."
-    )
-
-# Boş seçimde de taban haritası ve sınır katmanı gösterilebilir.
-fmap = make_map(
-    gdf=gdf,
-    show_countries=show_countries,
-    show_lines=show_lines and not gdf.empty,
-    show_points=show_points and not gdf.empty,
-    show_labels=show_labels and not gdf.empty,
-    show_basemap=show_basemap,
-)
-
-st_folium(
-    fmap,
-    use_container_width=True,
-    height=680,
-    key="hazar_ogur_map",
-)
-
-# ============================================================
-# TABLO VE İNDİRMELER
-# ============================================================
-
-st.subheader("📋 GeoDataFrame")
-
-if gdf.empty:
-    st.dataframe(
-        pd.DataFrame(columns=[c for c in COLUMNS if c != "geometry"]),
+    st_folium(
+        fmap,
+        height=650,
         use_container_width=True,
-    )
-else:
-    st.dataframe(
-        gdf.drop(columns="geometry"),
-        use_container_width=True,
-        hide_index=True,
+        returned_objects=[],
+        key="hazar_ogur_map",
     )
 
-st.subheader("📥 Verileri dışa aktar")
-
-if gdf.empty:
-    st.info(
-        "İndirme için en az bir kayıt seç. Boş GeoJSON indirme düğmesi "
-        "oluşturulmadı."
-    )
-else:
-    # to_file(BytesIO) yerine doğrudan GeoJSON metni üret.
-    # to_wgs84=True, dışa aktarılan koordinatları WGS84'e dönüştürür.
-    geojson_text = gdf.to_json(
-        na="null",
-        drop_id=True,
-        to_wgs84=True,
-    )
-
-    # Geçerli JSON olduğunu indirme düğmesini göstermeden önce doğrula.
-    json.loads(geojson_text)
+with right:
+    st.subheader("Seçim özeti")
+    st.metric("Seçili güzergâh", len(selected_routes))
+    st.metric("Çizgi geometrisi", len(gdf))
+    st.caption("Bu kayıtlar şematik araştırma verileridir; doğrulanmış tarihsel rota verisi değildir.")
 
     st.download_button(
-        label="🌍 GeoJSON indir",
-        data=geojson_text.encode("utf-8"),
-        file_name="hazar_ogur.geojson",
+        "GeoJSON indir",
+        data=make_geojson(gdf),
+        file_name="hazar_ogur_routes.geojson",
         mime="application/geo+json",
+        use_container_width=True,
     )
-
-    # CSV'de Shapely geometrisi yerine WKT kullan.
-    csv_df = gdf.drop(columns="geometry").copy()
-    csv_df["geometry_wkt"] = gdf.geometry.to_wkt()
-
-    csv_bytes = csv_df.to_csv(
-        index=False,
-        encoding="utf-8-sig",
-    ).encode("utf-8-sig")
-
     st.download_button(
-        label="📄 CSV indir",
-        data=csv_bytes,
-        file_name="hazar_ogur.csv",
+        "CSV indir",
+        data=make_csv(selected_routes),
+        file_name="hazar_ogur_routes.csv",
         mime="text/csv",
+        use_container_width=True,
     )
 
-st.caption(
-    "Harita verileri ve çizimler şematik araştırma katmanlarıdır. "
-    "Ülke sınırları tarihsel dönemlerin siyasi sınırlarını temsil etmez."
-)
+with st.expander("Veri tablosu"):
+    if selected_routes:
+        table = pd.DataFrame(
+            [
+                {
+                    "ID": r["id"],
+                    "Güzergâh": r["name"],
+                    "Kategori": r["category"],
+                    "Açıklama": r["description"],
+                }
+                for r in selected_routes
+            ]
+        )
+        st.dataframe(table, use_container_width=True, hide_index=True)
+    else:
+        st.write("Seçili kayıt yok.")
+
+st.caption("Taban haritası ve çevrim içi ülke sınırları için internet bağlantısı gerekir.")
