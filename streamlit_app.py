@@ -1,10 +1,5 @@
-from pathlib import Path
-
-app_code = r'''from __future__ import annotations
-
 import json
 from typing import Any
-
 import folium
 import pandas as pd
 import streamlit as st
@@ -690,14 +685,3 @@ st.markdown(
     '<div class="small-muted">Hazar–Oğur Atlası · Streamlit + Folium + OpenStreetMap</div>',
     unsafe_allow_html=True,
 )
-'''
-requirements = """streamlit>=1.36
-pandas>=2.0
-folium>=0.16
-streamlit-folium>=0.22
-shapely>=2.0
-"""
-Path("/mnt/data/app.py").write_text(app_code, encoding="utf-8")
-Path("/mnt/data/requirements.txt").write_text(requirements, encoding="utf-8")
-print("Created /mnt/data/app.py")
-print("Created /mnt/data/requirements.txt")
