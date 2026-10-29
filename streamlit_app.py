@@ -7,17 +7,16 @@ import json
 import math
 from typing import Any
 
-import pandas as pd
 import folium
+import pandas as pd
 import streamlit as st
-from folium.plugins import Fullscreen, MiniMap, MousePosition
-from shapely.geometry import shape, mapping, Point
 from shapely import wkt
+from shapely.geometry import Point, LineString, mapping, shape
 from streamlit_folium import st_folium
 
 
 # ============================================================
-# SAYFA AYARLARI
+# 1. SAYFA AYARLARI
 # ============================================================
 
 st.set_page_config(
@@ -27,12 +26,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-APP_NAME = "Hazar–Oğur Atlası"
-APP_SUBTITLE = "Tarihî coğrafya • Göç güzergâhları • Coğrafi veri laboratuvarı"
+APP_TITLE = "Hazar–Oğur Atlası"
+APP_VERSION = "2.0.0"
 
 
 # ============================================================
-# TASARIM
+# 2. KOYU TEMA TASARIMI
 # ============================================================
 
 st.markdown(
@@ -41,13 +40,14 @@ st.markdown(
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
     :root {
-        --navy: #101c32;
-        --navy2: #172944;
-        --blue: #3978f6;
-        --muted: #69778c;
-        --line: #e4eaf2;
-        --panel: #ffffff;
-        --bg: #f4f7fb;
+        --bg: #0b1120;
+        --panel: #111b2e;
+        --panel2: #17243a;
+        --border: #263650;
+        --text: #e8eef8;
+        --muted: #94a3b8;
+        --blue: #60a5fa;
+        --cyan: #22d3ee;
     }
 
     html, body, [class*="css"] {
@@ -55,145 +55,205 @@ st.markdown(
     }
 
     .stApp {
-        background: var(--bg);
+        background:
+            radial-gradient(ellipse at 10% 0%, rgba(37,99,235,.12), transparent 35%),
+            #0b1120;
+        color: var(--text);
     }
 
     [data-testid="stHeader"] {
-        background: rgba(244,247,251,.88);
+        background: rgba(11,17,32,.90);
     }
 
     .block-container {
-        max-width: 1600px;
-        padding-top: 1.25rem;
-        padding-bottom: 2.5rem;
+        max-width: 1700px;
+        padding-top: 1.3rem;
+        padding-bottom: 2rem;
     }
 
     [data-testid="stSidebar"] {
-        background: #fff;
-        border-right: 1px solid var(--line);
+        background: #0e1728;
+        border-right: 1px solid #263650;
+    }
+
+    [data-testid="stSidebar"] * {
+        color: #e8eef8;
+    }
+
+    [data-testid="stSidebar"] hr {
+        border-color: #263650;
+    }
+
+    h1, h2, h3 {
+        color: #f1f5f9;
+        letter-spacing: -.4px;
+    }
+
+    p, label, .stCaption {
+        color: #c1cddd;
     }
 
     .hero {
-        background: linear-gradient(120deg, #101c32 0%, #1b3456 65%, #24518a 100%);
-        border-radius: 22px;
-        padding: 27px 30px;
-        color: white;
-        margin-bottom: 20px;
-        box-shadow: 0 12px 30px rgba(16,28,50,.13);
         position: relative;
         overflow: hidden;
+        background: linear-gradient(115deg, #111b2e 0%, #172b49 58%, #123c58 100%);
+        border: 1px solid #2c4565;
+        border-radius: 22px;
+        padding: 27px 30px;
+        margin-bottom: 20px;
+        box-shadow: 0 14px 40px rgba(0,0,0,.22);
     }
 
     .hero:after {
         content: "◉";
         position: absolute;
-        right: 28px;
-        top: -53px;
-        font-size: 190px;
+        right: 24px;
+        top: -72px;
+        font-size: 230px;
         line-height: 1;
-        color: rgba(255,255,255,.055);
+        color: rgba(125,211,252,.06);
+        pointer-events: none;
     }
 
     .hero-kicker {
-        color: #9fc3ff;
-        font-size: 11px;
-        letter-spacing: 2px;
+        color: #7dd3fc;
         text-transform: uppercase;
+        font-size: 11px;
         font-weight: 800;
-        margin-bottom: 9px;
+        letter-spacing: 2.2px;
+        margin-bottom: 10px;
     }
 
     .hero h1 {
-        color: #fff;
-        font-size: clamp(25px, 3vw, 38px);
+        font-size: clamp(27px, 3vw, 40px);
         line-height: 1.15;
-        margin: 0 0 10px 0;
         font-weight: 800;
-        letter-spacing: -1px;
+        color: #f8fafc;
+        margin: 0 0 10px 0;
     }
 
     .hero p {
-        color: #d3deed;
+        max-width: 850px;
         font-size: 14px;
+        line-height: 1.7;
+        color: #c7d6e8;
         margin: 0;
-        max-width: 750px;
+    }
+
+    .hero-chip {
+        display: inline-block;
+        border: 1px solid rgba(125,211,252,.30);
+        background: rgba(8,145,178,.15);
+        color: #a5f3fc;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 5px 10px;
+        margin-top: 15px;
+        margin-right: 6px;
     }
 
     .metric {
-        background: #fff;
-        border: 1px solid var(--line);
-        border-radius: 15px;
+        background: linear-gradient(145deg, #111b2e, #131f34);
+        border: 1px solid #263650;
+        border-radius: 16px;
         padding: 17px 19px;
-        min-height: 105px;
-        box-shadow: 0 3px 12px rgba(30,50,80,.025);
+        min-height: 112px;
+        box-shadow: 0 5px 18px rgba(0,0,0,.10);
     }
 
     .metric-label {
-        font-size: 12px;
-        color: var(--muted);
-        font-weight: 600;
-        margin-bottom: 9px;
+        font-size: 11px;
+        letter-spacing: .8px;
+        font-weight: 700;
+        color: #94a3b8;
+        margin-bottom: 10px;
     }
 
     .metric-value {
-        font-size: 28px;
-        line-height: 1.1;
+        color: #f8fafc;
+        font-size: 30px;
         font-weight: 800;
-        color: var(--navy);
+        line-height: 1.1;
     }
 
     .metric-note {
-        color: #8a96a8;
+        color: #8495ad;
         font-size: 11px;
-        margin-top: 7px;
-    }
-
-    .section-heading {
-        color: var(--navy);
-        font-size: 18px;
-        font-weight: 800;
-        margin: 5px 0 4px 0;
-    }
-
-    .section-caption {
-        color: var(--muted);
-        font-size: 12px;
-        margin-bottom: 13px;
-    }
-
-    .panel {
-        background: #fff;
-        border: 1px solid var(--line);
-        border-radius: 17px;
-        padding: 16px;
-    }
-
-    .map-note {
-        color: #68778b;
-        font-size: 12px;
         margin-top: 8px;
     }
 
+    .section-title {
+        color: #f1f5f9;
+        font-size: 19px;
+        font-weight: 800;
+        margin-bottom: 4px;
+    }
+
+    .section-subtitle {
+        color: #94a3b8;
+        font-size: 12px;
+        margin-bottom: 15px;
+    }
+
     div[data-testid="stTabs"] button {
+        color: #b7c5d9;
         font-weight: 700;
     }
 
+    div[data-testid="stTabs"] button[aria-selected="true"] {
+        color: #7dd3fc;
+    }
+
+    div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+        background: #38bdf8;
+    }
+
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stNumberInput"] input,
+    div[data-testid="stSelectbox"] > div > div,
+    div[data-testid="stMultiSelect"] > div > div {
+        background: #111b2e;
+        color: #e8eef8;
+        border-color: #334761;
+    }
+
+    div[data-testid="stButton"] button,
     div[data-testid="stDownloadButton"] button {
+        background: #173d66;
+        color: #f8fafc;
+        border: 1px solid #2e6595;
         border-radius: 10px;
         font-weight: 700;
+        transition: all .15s ease;
     }
 
-    .footer {
-        border-top: 1px solid var(--line);
-        margin-top: 28px;
-        padding-top: 14px;
-        color: #8490a2;
-        font-size: 11px;
+    div[data-testid="stButton"] button:hover,
+    div[data-testid="stDownloadButton"] button:hover {
+        background: #205482;
+        border-color: #60a5fa;
+        color: white;
+    }
+
+    div[data-testid="stDataFrame"] {
+        border: 1px solid #263650;
+        border-radius: 12px;
+        overflow: hidden;
     }
 
     div[data-testid="stAlert"] {
         border-radius: 12px;
     }
+
+    .footer {
+        border-top: 1px solid #263650;
+        padding-top: 15px;
+        margin-top: 28px;
+        font-size: 11px;
+        line-height: 1.8;
+        color: #8495ad;
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -201,10 +261,9 @@ st.markdown(
 
 
 # ============================================================
-# YERLEŞİK ÖRNEK VERİ
-# Koordinatlar GeoJSON standardına uygun olarak [boylam, enlem].
-# Bu kayıtlar tarihî iddiaların kesin kanıtı değil, görselleştirme
-# için başlangıç veri kümesidir.
+# 3. BAŞLANGIÇ VERİSİ
+# Koordinatlar GeoJSON standardına göre [boylam, enlem].
+# Örnek veri; tarihî doğruluğun ayrıca kaynaklarla doğrulanması gerekir.
 # ============================================================
 
 DEFAULT_FEATURES = [
@@ -213,7 +272,7 @@ DEFAULT_FEATURES = [
         "properties": {
             "name": "Ujur / Uygur",
             "description": "Orhun bölgesi → Jetisu",
-            "color": "#2563eb",
+            "color": "#3b82f6",
             "label_dx": 1.5,
             "label_dy": 0.8,
             "group": "Sınıflandırılmamış",
@@ -229,23 +288,20 @@ DEFAULT_FEATURES = [
         "properties": {
             "name": "Tauris",
             "description": "Kırım (yerel)",
-            "color": "#059669",
+            "color": "#10b981",
             "label_dx": 0.9,
             "label_dy": -1.7,
             "group": "Sınıflandırılmamış",
             "label": "Tauris",
         },
-        "geometry": {
-            "type": "Point",
-            "coordinates": [34, 45],
-        },
+        "geometry": {"type": "Point", "coordinates": [34, 45]},
     },
     {
         "type": "Feature",
         "properties": {
             "name": "Avar",
             "description": "Kafkasya → Pannonia",
-            "color": "#dc2626",
+            "color": "#ef4444",
             "label_dx": 0.9,
             "label_dy": 0.6,
             "group": "Sınıflandırılmamış",
@@ -261,7 +317,7 @@ DEFAULT_FEATURES = [
         "properties": {
             "name": "Uauz / Oguz",
             "description": "Aral/Hazar → Anadolu",
-            "color": "#d97706",
+            "color": "#f59e0b",
             "label_dx": 0.9,
             "label_dy": -1.5,
             "group": "Sınıflandırılmamış",
@@ -277,71 +333,59 @@ DEFAULT_FEATURES = [
         "properties": {
             "name": "Bizal / Barsil",
             "description": "Volga-Don / Kuzey Kafkasya",
-            "color": "#7c3aed",
+            "color": "#a78bfa",
             "label_dx": 1.0,
             "label_dy": 1.2,
             "group": "Sınıflandırılmamış",
             "label": "Bizal / Barsil",
         },
-        "geometry": {
-            "type": "Point",
-            "coordinates": [42, 48],
-        },
+        "geometry": {"type": "Point", "coordinates": [42, 48]},
     },
     {
         "type": "Feature",
         "properties": {
             "name": "Tarna",
             "description": "Dağıstan / Tarku",
-            "color": "#db2777",
+            "color": "#f472b6",
             "label_dx": 1.0,
             "label_dy": -1.4,
             "group": "Sınıflandırılmamış",
             "label": "Tarna",
         },
-        "geometry": {
-            "type": "Point",
-            "coordinates": [47.5, 42.9],
-        },
+        "geometry": {"type": "Point", "coordinates": [47.5, 42.9]},
     },
     {
         "type": "Feature",
         "properties": {
             "name": "Khazar",
             "description": "Aşağı Volga / İtil",
-            "color": "#4f46e5",
+            "color": "#818cf8",
             "label_dx": 1.6,
             "label_dy": 0.7,
             "group": "Sınıflandırılmamış",
             "label": "Khazar",
         },
-        "geometry": {
-            "type": "Point",
-            "coordinates": [48, 46],
-        },
+        "geometry": {"type": "Point", "coordinates": [48, 46]},
     },
     {
         "type": "Feature",
         "properties": {
             "name": "Janur / Zagur",
             "description": "Azak / Kuban",
-            "color": "#0891b2",
+            "color": "#22d3ee",
             "label_dx": -7.2,
             "label_dy": 0.9,
             "group": "Sınıflandırılmamış",
             "label": "Janur / Zagur",
         },
-        "geometry": {
-            "type": "Point",
-            "coordinates": [39, 45.2],
-        },
+        "geometry": {"type": "Point", "coordinates": [39, 45.2]},
     },
     {
         "type": "Feature",
         "properties": {
             "name": "Bulgar",
             "description": "Kuban → Volga",
-            "color": "#ea580c",
+            "color": "#fb923c",
             "label_dx": 1.0,
             "label_dy": 1.0,
             "group": "Sınıflandırılmamış",
@@ -357,7 +401,7 @@ DEFAULT_FEATURES = [
         "properties": {
             "name": "Sabir / Suvar",
             "description": "Batı Sibirya → Kafkasya",
-            "color": "#16a34a",
+            "color": "#4ade80",
             "label_dx": 1.0,
             "label_dy": -1.4,
             "group": "Sınıflandırılmamış",
@@ -372,37 +416,40 @@ DEFAULT_FEATURES = [
 
 
 # ============================================================
-# VERİ NORMALİZASYONU VE DOĞRULAMA
+# 4. VERİ DOĞRULAMA VE DÖNÜŞÜM
 # ============================================================
 
 def safe_color(value: Any) -> str:
-    value = str(value or "#3978f6").strip()
+    value = str(value or "#60a5fa").strip()
     if len(value) == 7 and value.startswith("#"):
         try:
             int(value[1:], 16)
             return value
         except ValueError:
             pass
-    return "#3978f6"
+    return "#60a5fa"
 
 
 def safe_number(value: Any, default: float = 0.0) -> float:
     try:
-        number = float(str(value).replace(",", "."))
-        return number if math.isfinite(number) else default
-    except (TypeError, ValueError):
-        return default
+        number = float(str(value).strip().replace(",", "."))
+        if math.isfinite(number):
+            return number
+    except (ValueError, TypeError):
+        pass
+    return default
 
 
 def normalize_feature(feature: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(feature, dict):
-        raise ValueError("Her özellik bir JSON nesnesi olmalıdır.")
+        raise ValueError("Özellik bir JSON nesnesi olmalıdır.")
 
     geometry = feature.get("geometry")
     if not isinstance(geometry, dict):
         raise ValueError("Geometri bulunamadı.")
 
     geom = shape(geometry)
+
     if geom.is_empty:
         raise ValueError("Boş geometri kabul edilmez.")
 
@@ -416,13 +463,13 @@ def normalize_feature(feature: dict[str, Any]) -> dict[str, Any]:
     if not geom.is_valid:
         raise ValueError("Geometri geçerli değil.")
 
-    if not all(math.isfinite(v) for v in geom.bounds):
-        raise ValueError("Koordinatlar sonlu sayılar olmalıdır.")
+    if not all(math.isfinite(value) for value in geom.bounds):
+        raise ValueError("Koordinatlar geçerli sayılar olmalıdır.")
 
     minx, miny, maxx, maxy = geom.bounds
     if minx < -180 or maxx > 180 or miny < -90 or maxy > 90:
         raise ValueError(
-            "Koordinatlar GeoJSON standardına göre [boylam, enlem] olmalıdır."
+            "Koordinatlar [boylam, enlem] sırasıyla ve geçerli aralıkta olmalıdır."
         )
 
     props = dict(feature.get("properties") or {})
@@ -442,7 +489,11 @@ def normalize_feature(feature: dict[str, Any]) -> dict[str, Any]:
         or ""
     )
 
-    group = props.get("group") or props.get("grupo") or "Sınıflandırılmamış"
+    group = (
+        props.get("group")
+        or props.get("grupo")
+        or "Sınıflandırılmamış"
+    )
 
     props["name"] = str(name)
     props["label"] = str(props.get("label") or name)
@@ -462,205 +513,238 @@ def normalize_feature(feature: dict[str, Any]) -> dict[str, Any]:
 
 def normalize_collection(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, dict) and data.get("type") == "FeatureCollection":
-        features = data.get("features", [])
+        items = data.get("features", [])
     elif isinstance(data, dict) and data.get("type") == "Feature":
-        features = [data]
+        items = [data]
     elif isinstance(data, list):
-        features = data
+        items = data
     else:
         raise ValueError(
             "Dosya FeatureCollection, Feature veya özellik listesi olmalıdır."
         )
 
-    normalized = []
+    valid_features = []
     errors = []
 
-    for index, feature in enumerate(features):
+    for index, feature in enumerate(items):
         try:
-            normalized.append(normalize_feature(feature))
+            valid_features.append(normalize_feature(feature))
         except Exception as exc:
             errors.append(f"Kayıt {index + 1}: {exc}")
 
-    if not normalized:
-        detail = "\n".join(errors[:5])
-        raise ValueError("Geçerli kayıt bulunamadı.\n" + detail)
+    if not valid_features:
+        raise ValueError(
+            "Dosyada geçerli kayıt bulunamadı. "
+            + " | ".join(errors[:4])
+        )
 
     if errors:
         st.warning(
-            f"{len(errors)} kayıt atlandı; {len(normalized)} kayıt yüklendi. "
+            f"{len(errors)} kayıt atlandı. "
+            f"{len(valid_features)} geçerli kayıt yüklendi. "
             + " | ".join(errors[:3])
         )
 
-    return normalized
+    return valid_features
 
 
-def load_csv(uploaded_file) -> list[dict[str, Any]]:
-    df = pd.read_csv(uploaded_file)
-    df.columns = [
-        str(column).strip().lstrip("*").lower()
-        for column in df.columns
-    ]
+def load_uploaded_file(uploaded_file) -> list[dict[str, Any]]:
+    filename = uploaded_file.name.lower()
 
-    # Yaygın eski sütun adlarını eşleştir.
-    aliases = {
-        "nombre": "name",
-        "descripcion": "description",
-        "grupo": "group",
-        "tipo_geometria": "geometry_type",
-        "label_dy": "label_dy",
-    }
-    df = df.rename(columns=aliases)
+    if filename.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+        df.columns = [
+            str(col).strip().lstrip("*").lower()
+            for col in df.columns
+        ]
 
-    features = []
-
-    for _, row in df.iterrows():
-        row_data = row.to_dict()
-
-        if "geometry" in row_data and pd.notna(row_data["geometry"]):
-            geom = wkt.loads(str(row_data["geometry"]))
-        elif (
-            pd.notna(row_data.get("start_lon"))
-            and pd.notna(row_data.get("start_lat"))
-        ):
-            start = [
-                safe_number(row_data["start_lon"]),
-                safe_number(row_data["start_lat"]),
-            ]
-
-            if (
-                pd.notna(row_data.get("end_lon"))
-                and pd.notna(row_data.get("end_lat"))
-            ):
-                end = [
-                    safe_number(row_data["end_lon"]),
-                    safe_number(row_data["end_lat"]),
-                ]
-                from shapely.geometry import LineString
-                geom = LineString([start, end])
-            else:
-                geom = Point(start)
-        elif (
-            pd.notna(row_data.get("lon"))
-            and pd.notna(row_data.get("lat"))
-        ):
-            geom = Point(
-                safe_number(row_data["lon"]),
-                safe_number(row_data["lat"]),
-            )
-        else:
-            continue
-
-        properties = {
-            key: value
-            for key, value in row_data.items()
-            if key not in {"geometry", "start_lon", "start_lat", "end_lon", "end_lat", "lon", "lat"}
-            and pd.notna(value)
+        aliases = {
+            "nombre": "name",
+            "descripcion": "description",
+            "grupo": "group",
         }
+        df = df.rename(columns=aliases)
 
-        features.append({
-            "type": "Feature",
-            "properties": properties,
-            "geometry": mapping(geom),
-        })
+        features = []
 
-    return normalize_collection(features)
+        for _, row in df.iterrows():
+            data = row.to_dict()
+
+            if "geometry" in data and pd.notna(data["geometry"]):
+                geom_text = str(data["geometry"]).strip()
+
+                try:
+                    geom = wkt.loads(geom_text)
+                except Exception:
+                    try:
+                        geom = shape(json.loads(geom_text))
+                    except Exception as exc:
+                        raise ValueError(
+                            "CSV geometry sütunu WKT veya GeoJSON geometri "
+                            "metni içermelidir."
+                        ) from exc
+
+            elif (
+                pd.notna(data.get("start_lon"))
+                and pd.notna(data.get("start_lat"))
+            ):
+                start = [
+                    safe_number(data["start_lon"]),
+                    safe_number(data["start_lat"]),
+                ]
+
+                if (
+                    pd.notna(data.get("end_lon"))
+                    and pd.notna(data.get("end_lat"))
+                ):
+                    end = [
+                        safe_number(data["end_lon"]),
+                        safe_number(data["end_lat"]),
+                    ]
+                    geom = LineString([start, end])
+                else:
+                    geom = Point(start)
+
+            elif (
+                pd.notna(data.get("lon"))
+                and pd.notna(data.get("lat"))
+            ):
+                geom = Point(
+                    safe_number(data["lon"]),
+                    safe_number(data["lat"]),
+                )
+            else:
+                continue
+
+            props = {
+                key: value
+                for key, value in data.items()
+                if key not in {
+                    "geometry",
+                    "start_lon", "start_lat",
+                    "end_lon", "end_lat",
+                    "lon", "lat",
+                }
+                and not pd.isna(value)
+            }
+
+            features.append({
+                "type": "Feature",
+                "properties": props,
+                "geometry": mapping(geom),
+            })
+
+        return normalize_collection(features)
+
+    try:
+        data = json.loads(uploaded_file.getvalue().decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Dosya geçerli UTF-8 JSON/GeoJSON değil.") from exc
+
+    return normalize_collection(data)
 
 
 # ============================================================
-# SIDEBAR
-# ============================================================
-
-with st.sidebar:
-    st.markdown("## 🌍 Atlas kontrolü")
-    st.caption("Veri kümesini seç ve haritayı özelleştir.")
-
-    uploaded = st.file_uploader(
-        "GeoJSON, JSON veya CSV yükle",
-        type=["geojson", "json", "csv"],
-        help="CSV için geometry sütununda WKT veya lon/lat sütunları kullanabilirsin.",
-    )
-
-    if st.button("↺ Varsayılan verilere dön", use_container_width=True):
-        st.session_state.pop("custom_features", None)
-        st.rerun()
-
-    st.divider()
-    st.markdown("### Görünüm")
-
-    show_labels = st.toggle("Harita etiketlerini göster", value=True)
-    fit_bounds = st.toggle("Veri kümesini haritaya sığdır", value=True)
-    show_minimap = st.toggle("Küçük genel bakış haritası", value=False)
-
-    st.divider()
-    st.markdown("### Filtreler")
-    st.caption("Filtreler hem haritaya hem tabloya uygulanır.")
-
-
-# ============================================================
-# DOSYA YÜKLEME
+# 5. SIDEBAR VE DOSYA YÜKLEME
 # ============================================================
 
 if "custom_features" not in st.session_state:
     st.session_state["custom_features"] = None
 
-if uploaded is not None:
-    try:
-        uploaded.seek(0)
-        if uploaded.name.lower().endswith(".csv"):
-            features = load_csv(uploaded)
-        else:
-            features = normalize_collection(
-                json.loads(uploaded.getvalue().decode("utf-8-sig"))
-            )
-        st.session_state["custom_features"] = features
-    except Exception as exc:
-        st.error(f"Dosya okunamadı: {exc}")
+with st.sidebar:
+    st.markdown("## 🌍 Atlas kontrolü")
+    st.caption(f"Bağımsız uygulama · v{APP_VERSION}")
 
-features_all = (
+    uploaded_file = st.file_uploader(
+        "Veri dosyası yükle",
+        type=["geojson", "json", "csv"],
+        help=(
+            "GeoJSON/JSON FeatureCollection veya CSV yükleyebilirsin. "
+            "CSV için WKT geometry ya da lon/lat sütunları desteklenir."
+        ),
+    )
+
+    if uploaded_file is not None:
+        try:
+            new_features = load_uploaded_file(uploaded_file)
+            st.session_state["custom_features"] = new_features
+            st.success(f"{len(new_features)} kayıt yüklendi.")
+        except Exception as exc:
+            st.error(f"Dosya yüklenemedi: {exc}")
+
+    if st.button("↺ Varsayılan verilere dön", use_container_width=True):
+        st.session_state["custom_features"] = None
+        st.rerun()
+
+    st.divider()
+    st.markdown("### Görünüm")
+
+    basemap = st.selectbox(
+        "Taban harita",
+        options=[
+            "OpenStreetMap",
+            "CartoDB dark_matter",
+            "CartoDB positron",
+        ],
+        index=0,
+        help="Uygulama varsayılan olarak OpenStreetMap ile açılır.",
+    )
+
+    show_labels = st.toggle("İsim etiketleri", value=True)
+    show_minimap = st.toggle("Küçük genel bakış haritası", value=False)
+    fit_bounds = st.toggle("Verileri haritaya sığdır", value=True)
+
+    st.divider()
+    st.markdown("### Filtreler")
+
+all_features = (
     st.session_state["custom_features"]
     if st.session_state["custom_features"] is not None
     else normalize_collection(DEFAULT_FEATURES)
 )
 
-groups = sorted({
+available_groups = sorted({
     str(f["properties"].get("group", "Sınıflandırılmamış"))
-    for f in features_all
+    for f in all_features
 })
-geometry_types = sorted({
-    f["geometry"]["type"] for f in features_all
+
+available_types = sorted({
+    str(f["geometry"]["type"])
+    for f in all_features
 })
 
 with st.sidebar:
     selected_groups = st.multiselect(
-        "Gruplar",
-        options=groups,
-        default=groups,
+        "Grup",
+        options=available_groups,
+        default=available_groups,
     )
 
     selected_types = st.multiselect(
-        "Geometri türleri",
-        options=geometry_types,
-        default=geometry_types,
+        "Geometri",
+        options=available_types,
+        default=available_types,
     )
 
-    search_text = st.text_input(
+    search_query = st.text_input(
         "Kayıt ara",
         placeholder="Örn. Khazar, Bulgar...",
     )
 
 
 # ============================================================
-# FİLTRELEME
+# 6. FİLTRELEME
 # ============================================================
 
-filtered = []
+visible_features = []
 
-for feature in features_all:
+for feature in all_features:
     props = feature["properties"]
     geom_type = feature["geometry"]["type"]
 
     if props.get("group", "Sınıflandırılmamış") not in selected_groups:
         continue
+
     if geom_type not in selected_types:
         continue
 
@@ -670,51 +754,58 @@ for feature in features_all:
         str(props.get("group", "")),
     ]).casefold()
 
-    if search_text.strip().casefold() not in searchable:
+    if search_query.strip().casefold() not in searchable:
         continue
 
-    filtered.append(feature)
+    visible_features.append(feature)
 
 
 # ============================================================
-# BAŞLIK VE İSTATİSTİKLER
+# 7. ÜST BANNER VE İSTATİSTİKLER
 # ============================================================
 
 st.markdown(
     f"""
     <div class="hero">
-        <div class="hero-kicker">INTERACTIVE HISTORICAL GEOGRAPHY</div>
-        <h1>🌍 {APP_NAME}</h1>
-        <p>{APP_SUBTITLE}<br>
-        Tarihî kayıtları harita üzerinde incele, filtrele ve dışa aktar.</p>
+        <div class="hero-kicker">HISTORICAL GEOGRAPHY · INTERACTIVE ATLAS</div>
+        <h1>🌍 {APP_TITLE}</h1>
+        <p>
+            Tarihî coğrafya kayıtlarını keşfet, güzergâhları karşılaştır,
+            verileri filtrele ve dışa aktar.
+        </p>
+        <span class="hero-chip">● OpenStreetMap</span>
+        <span class="hero-chip">● GeoJSON</span>
+        <span class="hero-chip">● CSV</span>
+        <span class="hero-chip">● Dark interface</span>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-point_count = sum(
-    shape(f["geometry"]).geom_type in {"Point", "MultiPoint"}
-    for f in filtered
-)
-line_count = sum(
-    shape(f["geometry"]).geom_type in {"LineString", "MultiLineString"}
-    for f in filtered
-)
-area_count = sum(
-    shape(f["geometry"]).geom_type in {"Polygon", "MultiPolygon"}
-    for f in filtered
-)
+point_count = 0
+line_count = 0
+area_count = 0
 
-c1, c2, c3, c4 = st.columns(4)
+for feature in visible_features:
+    geom_type = shape(feature["geometry"]).geom_type
 
-metrics = [
-    (c1, "GÖSTERİLEN KAYIT", len(filtered), "Aktif filtrelerden sonra"),
-    (c2, "NOKTA / ÇOKLU NOKTA", point_count, "Konum kayıtları"),
-    (c3, "GÜZERGÂH", line_count, "Çizgi geometrileri"),
-    (c4, "ALAN / BÖLGE", area_count, "Poligon geometrileri"),
+    if geom_type in {"Point", "MultiPoint"}:
+        point_count += 1
+    elif geom_type in {"LineString", "MultiLineString"}:
+        line_count += 1
+    elif geom_type in {"Polygon", "MultiPolygon"}:
+        area_count += 1
+
+metric_data = [
+    ("GÖSTERİLEN KAYIT", len(visible_features), "Aktif filtrelerden sonra"),
+    ("NOKTA", point_count, "Konum kayıtları"),
+    ("GÜZERGÂH", line_count, "Çizgi geometrileri"),
+    ("ALAN", area_count, "Poligon geometrileri"),
 ]
 
-for col, label, value, note in metrics:
+cols = st.columns(4)
+
+for col, (label, value, note) in zip(cols, metric_data):
     with col:
         st.markdown(
             f"""
@@ -731,40 +822,37 @@ st.write("")
 
 
 # ============================================================
-# HARİTA ÜRETİMİ
+# 8. HARİTA YARDIMCILARI
 # ============================================================
 
-def feature_label_location(feature: dict[str, Any]) -> tuple[float, float]:
+def label_position(feature: dict[str, Any]) -> tuple[float, float]:
     geom = shape(feature["geometry"])
     props = feature["properties"]
 
     if geom.geom_type == "Point":
-        lon, lat = geom.x, geom.y
+        point = geom
     elif geom.geom_type == "MultiPoint":
         point = list(geom.geoms)[0]
-        lon, lat = point.x, point.y
-    elif geom.geom_type in {"LineString", "MultiLineString"}:
-        line = geom if geom.geom_type == "LineString" else max(
-            geom.geoms, key=lambda part: part.length
-        )
-        point = line.interpolate(0.5, normalized=True)
-        lon, lat = point.x, point.y
+    elif geom.geom_type == "LineString":
+        point = geom.interpolate(0.5, normalized=True)
+    elif geom.geom_type == "MultiLineString":
+        longest = max(geom.geoms, key=lambda part: part.length)
+        point = longest.interpolate(0.5, normalized=True)
     else:
         point = geom.representative_point()
-        lon, lat = point.x, point.y
 
-    lon += safe_number(props.get("label_dx"), 0.0)
-    lat += safe_number(props.get("label_dy"), 0.0)
+    lon = point.x + safe_number(props.get("label_dx"), 0.0)
+    lat = point.y + safe_number(props.get("label_dy"), 0.0)
 
-    # Leaflet haritasında geçersiz enlem oluşmasını engelle.
-    lat = max(-85, min(85, lat))
-    lon = max(-180, min(180, lon))
-    return lat, lon
+    return (
+        max(-85.0, min(85.0, lat)),
+        max(-180.0, min(180.0, lon)),
+    )
 
 
-def build_map(data: list[dict[str, Any]]) -> folium.Map:
-    # OpenStreetMap varsayılan ve ilk açılış katmanıdır.
-    m = folium.Map(
+def make_map(features: list[dict[str, Any]]) -> folium.Map:
+    # İlk ve varsayılan katman OpenStreetMap'tir.
+    map_object = folium.Map(
         location=[45.0, 45.0],
         zoom_start=4,
         tiles="OpenStreetMap",
@@ -773,54 +861,82 @@ def build_map(data: list[dict[str, Any]]) -> folium.Map:
         zoom_control=True,
     )
 
-    # Alternatif taban katmanı.
+    # Alternatif taban katmanları.
     folium.TileLayer(
-        "CartoDB Positron",
-        name="Açık renkli harita",
+        tiles="CartoDB dark_matter",
+        name="Koyu harita",
         overlay=False,
         control=True,
-    ).add_to(m)
+    ).add_to(map_object)
 
+    folium.TileLayer(
+        tiles="CartoDB positron",
+        name="Açık harita",
+        overlay=False,
+        control=True,
+    ).add_to(map_object)
+
+    # Kullanıcı seçimini varsayılan OSM katmanından sonra uygula.
+    if basemap != "OpenStreetMap":
+        map_object.options["layers"] = []
+
+    # Katmanlar.
     route_layer = folium.FeatureGroup(
         name="Güzergâhlar",
         show=True,
-    ).add_to(m)
+    ).add_to(map_object)
 
     point_layer = folium.FeatureGroup(
         name="Konum noktaları",
         show=True,
-    ).add_to(m)
+    ).add_to(map_object)
 
     area_layer = folium.FeatureGroup(
         name="Alanlar",
         show=True,
-    ).add_to(m)
+    ).add_to(map_object)
 
     label_layer = folium.FeatureGroup(
         name="İsim etiketleri",
         show=show_labels,
-    ).add_to(m)
+    ).add_to(map_object)
 
-    all_bounds = []
+    bounds = []
+    legend_entries: dict[str, str] = {}
 
-    for feature in data:
+    for feature in features:
         props = feature["properties"]
         geom = shape(feature["geometry"])
+
+        name_raw = str(props.get("name", "İsimsiz"))
+        description_raw = str(props.get("description", ""))
+        group_raw = str(props.get("group", ""))
         color = safe_color(props.get("color"))
-        name = html.escape(str(props.get("name", "İsimsiz")))
-        description = html.escape(str(props.get("description", "")))
-        group = html.escape(str(props.get("group", "")))
+
+        name = html.escape(name_raw)
+        description = html.escape(description_raw)
+        group = html.escape(group_raw)
+
         geom_type = geom.geom_type
 
         popup_html = f"""
-        <div style="font-family:Arial,sans-serif;min-width:190px;max-width:280px">
-            <div style="font-size:16px;font-weight:800;color:#14233b;margin-bottom:8px">
+        <div style="
+            font-family:Arial,sans-serif;
+            background:#111b2e;
+            color:#e8eef8;
+            padding:10px;
+            min-width:190px;
+            border-radius:8px;
+        ">
+            <div style="font-size:16px;font-weight:800;margin-bottom:8px">
                 {name}
             </div>
-            <div style="margin-bottom:8px;color:#526178">{description}</div>
-            <div style="font-size:11px;color:#7a8798">
-                <b>Geometri:</b> {html.escape(geom_type)}<br>
-                <b>Grup:</b> {group}
+            <div style="font-size:12px;margin-bottom:8px">
+                {description}
+            </div>
+            <div style="font-size:11px;color:#a9bad0">
+                Geometri: {html.escape(geom_type)}<br>
+                Grup: {group}
             </div>
         </div>
         """
@@ -839,33 +955,36 @@ def build_map(data: list[dict[str, Any]]) -> folium.Map:
 
         folium.GeoJson(
             feature,
-            name=str(props.get("name", "Kayıt")),
+            name=name_raw,
             tooltip=tooltip,
             popup=folium.Popup(popup_html, max_width=320),
-            style_function=lambda _f, c=color: {
+            style_function=lambda _feature, c=color: {
                 "color": c,
                 "weight": 4,
-                "opacity": 0.90,
+                "opacity": 0.95,
                 "fillColor": c,
-                "fillOpacity": 0.20,
+                "fillOpacity": 0.22,
             },
-            highlight_function=lambda _f: {
+            highlight_function=lambda _feature: {
                 "weight": 6,
                 "opacity": 1.0,
                 "fillOpacity": 0.35,
             },
             marker=folium.CircleMarker(
                 radius=7,
+                color="#f8fafc",
                 weight=2,
-                color="#ffffff",
                 fill=True,
-                fill_opacity=1,
+                fill_color=color,
+                fill_opacity=1.0,
             ),
             zoom_on_click=True,
         ).add_to(target_layer)
 
+        legend_entries[name] = color
+
         if show_labels:
-            label_lat, label_lon = feature_label_location(feature)
+            label_lat, label_lon = label_position(feature)
             label_text = html.escape(
                 str(props.get("label") or props.get("name") or "")
             )
@@ -874,7 +993,7 @@ def build_map(data: list[dict[str, Any]]) -> folium.Map:
                 location=[label_lat, label_lon],
                 interactive=False,
                 icon=folium.DivIcon(
-                    icon_size=(180, 28),
+                    icon_size=(190, 28),
                     icon_anchor=(0, 12),
                     html=f"""
                     <div style="
@@ -882,10 +1001,10 @@ def build_map(data: list[dict[str, Any]]) -> folium.Map:
                         white-space:nowrap;
                         padding:4px 8px;
                         border-radius:6px;
-                        background:rgba(255,255,255,.94);
+                        background:rgba(11,17,32,.94);
                         border:1px solid {color};
-                        box-shadow:0 2px 7px rgba(20,35,59,.16);
-                        color:#172944;
+                        box-shadow:0 3px 10px rgba(0,0,0,.28);
+                        color:#f1f5f9;
                         font-size:11px;
                         font-weight:800;
                         font-family:Arial,sans-serif;
@@ -895,53 +1014,105 @@ def build_map(data: list[dict[str, Any]]) -> folium.Map:
             ).add_to(label_layer)
 
         minx, miny, maxx, maxy = geom.bounds
-        all_bounds.append((minx, miny, maxx, maxy))
+        bounds.append((minx, miny, maxx, maxy))
 
-    if fit_bounds and all_bounds:
-        min_lon = min(b[0] for b in all_bounds)
-        min_lat = min(b[1] for b in all_bounds)
-        max_lon = max(b[2] for b in all_bounds)
-        max_lat = max(b[3] for b in all_bounds)
+    # Tekilleştirilmiş harita lejandı.
+    if legend_entries:
+        legend_rows = "".join(
+            f"""
+            <div style="display:flex;align-items:center;gap:7px;margin:5px 0">
+                <span style="
+                    width:10px;height:10px;border-radius:50%;
+                    display:inline-block;background:{color};
+                    border:1px solid rgba(255,255,255,.5);
+                "></span>
+                <span>{label}</span>
+            </div>
+            """
+            for label, color in legend_entries.items()
+        )
+
+        legend_html = f"""
+        <div style="
+            position:fixed;
+            left:16px;
+            bottom:28px;
+            z-index:9999;
+            max-width:210px;
+            max-height:250px;
+            overflow-y:auto;
+            background:rgba(11,17,32,.95);
+            color:#e8eef8;
+            border:1px solid #334761;
+            border-radius:10px;
+            padding:10px 12px;
+            font-family:Arial,sans-serif;
+            font-size:11px;
+            box-shadow:0 5px 20px rgba(0,0,0,.3);
+        ">
+            <div style="
+                font-size:12px;font-weight:800;
+                color:#7dd3fc;margin-bottom:8px;
+            ">HARİTA LEJANDI</div>
+            {legend_rows}
+        </div>
+        """
+
+        map_object.get_root().html.add_child(folium.Element(legend_html))
+
+    if fit_bounds and bounds:
+        min_lon = min(item[0] for item in bounds)
+        min_lat = min(item[1] for item in bounds)
+        max_lon = max(item[2] for item in bounds)
+        max_lat = max(item[3] for item in bounds)
 
         if min_lon == max_lon:
             min_lon -= 0.5
             max_lon += 0.5
+
         if min_lat == max_lat:
             min_lat -= 0.5
             max_lat += 0.5
 
-        m.fit_bounds(
+        map_object.fit_bounds(
             [[min_lat, min_lon], [max_lat, max_lon]],
             padding=(35, 35),
         )
 
     if show_minimap:
-        MiniMap(toggle_display=True, position="bottomleft").add_to(m)
+        from folium.plugins import MiniMap
+        MiniMap(
+            tile_layer="OpenStreetMap",
+            toggle_display=True,
+            position="bottomright",
+        ).add_to(map_object)
+
+    from folium.plugins import Fullscreen, MousePosition
 
     Fullscreen(
         position="topleft",
         title="Tam ekran",
         title_cancel="Tam ekrandan çık",
         force_separate_button=True,
-    ).add_to(m)
+    ).add_to(map_object)
 
     MousePosition(
         position="bottomright",
         separator=" | ",
         prefix="Koordinat:",
         num_digits=4,
-    ).add_to(m)
+    ).add_to(map_object)
 
     folium.LayerControl(
         collapsed=False,
         position="topright",
-    ).add_to(m)
+    ).add_to(map_object)
 
-    return m
+    return map_object
 
 
 # ============================================================
-# SEKME YAPISI
+# 9. SEKME DÜZENİ
 # ============================================================
 
 tab_map, tab_data, tab_export, tab_about = st.tabs([
@@ -951,55 +1122,67 @@ tab_map, tab_data, tab_export, tab_about = st.tabs([
     "ⓘ Hakkında",
 ])
 
+
+# ------------------------------------------------------------
+# HARİTA
+# ------------------------------------------------------------
+
 with tab_map:
     st.markdown(
-        '<div class="section-heading">Coğrafi keşif alanı</div>',
+        '<div class="section-title">Coğrafi keşif alanı</div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="section-caption">'
-        'Yakınlaştır, haritayı sürükle, katmanları aç/kapat ve '
-        'bir kayıt seçerek ayrıntılarını incele.'
+        '<div class="section-subtitle">'
+        'Haritayı sürükle, yakınlaştır, katmanları değiştir ve kayıtların '
+        'üzerine tıklayarak ayrıntılarını görüntüle.'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    if not filtered:
-        st.warning("Seçili filtrelerle eşleşen kayıt bulunamadı.")
+    if not visible_features:
+        st.warning("Aktif filtrelerle eşleşen kayıt bulunamadı.")
     else:
-        current_map = build_map(filtered)
+        map_object = make_map(visible_features)
+
         st_folium(
-            current_map,
+            map_object,
             width=None,
-            height=680,
+            height=690,
             returned_objects=[],
             key="hazar_ogur_map",
         )
 
-    st.markdown(
-        '<div class="map-note">'
-        'Harita altyapısı: OpenStreetMap. Harita verileri internet bağlantısı '
-        'gerektirir. Güzergâh çizgileri kaynak veri kümesindeki koordinatları '
-        'gösterir; tek başına tarihî sınır veya kesin göç rotası kanıtı değildir.'
-        '</div>',
-        unsafe_allow_html=True,
+    st.caption(
+        "Harita döşemeleri internet bağlantısı gerektirir. "
+        "© OpenStreetMap contributors. Gösterilen güzergâhlar, "
+        "girdi verilerindeki koordinatları temsil eder."
     )
+
+
+# ------------------------------------------------------------
+# VERİ TABLOSU
+# ------------------------------------------------------------
 
 with tab_data:
     st.markdown("### 📋 Veri kayıtları")
-    st.caption(f"{len(filtered)} kayıt görüntüleniyor.")
+    st.caption(f"{len(visible_features)} kayıt gösteriliyor.")
 
     rows = []
-    for feature in filtered:
+
+    for feature in visible_features:
         props = feature["properties"]
         geom = shape(feature["geometry"])
+
+        representative_point = geom.representative_point()
+
         rows.append({
             "Ad": props.get("name", ""),
             "Açıklama": props.get("description", ""),
             "Grup": props.get("group", ""),
             "Geometri": geom.geom_type,
-            "Boylam": round(geom.centroid.x, 5),
-            "Enlem": round(geom.centroid.y, 5),
+            "Boylam": round(representative_point.x, 5),
+            "Enlem": round(representative_point.y, 5),
             "Renk": props.get("color", ""),
         })
 
@@ -1011,27 +1194,35 @@ with tab_data:
             height=520,
         )
     else:
-        st.info("Görüntülenecek kayıt yok.")
+        st.info("Gösterilecek kayıt bulunmuyor.")
+
+
+# ------------------------------------------------------------
+# DIŞA AKTARMA
+# ------------------------------------------------------------
 
 with tab_export:
-    st.markdown("### ⬇️ Verilerini dışa aktar")
-    st.caption("Mevcut filtrelerle eşleşen kayıtlar dışa aktarılır.")
+    st.markdown("### ⬇️ Verileri dışa aktar")
+    st.caption("Yalnızca mevcut filtrelerle eşleşen kayıtlar dışa aktarılır.")
 
-    geojson_output = {
+    geojson_document = {
         "type": "FeatureCollection",
-        "features": filtered,
+        "features": visible_features,
     }
 
     geojson_bytes = json.dumps(
-        geojson_output,
+        geojson_document,
         ensure_ascii=False,
         indent=2,
     ).encode("utf-8")
 
-    export_rows = []
-    for feature in filtered:
+    csv_rows = []
+
+    for feature in visible_features:
         props = feature["properties"]
-        export_rows.append({
+        geom = shape(feature["geometry"])
+
+        csv_rows.append({
             "name": props.get("name", ""),
             "description": props.get("description", ""),
             "group": props.get("group", ""),
@@ -1039,78 +1230,91 @@ with tab_export:
             "label": props.get("label", ""),
             "label_dx": props.get("label_dx", 0),
             "label_dy": props.get("label_dy", 0),
-            "geometry": json.dumps(
-                feature["geometry"],
-                ensure_ascii=False,
-            ),
+            "geometry": geom.wkt,
         })
 
     csv_buffer = io.StringIO()
-    pd.DataFrame(export_rows).to_csv(
-        csv_buffer,
-        index=False,
-        encoding="utf-8",
-    )
+    pd.DataFrame(csv_rows).to_csv(csv_buffer, index=False)
 
-    col_a, col_b = st.columns(2)
+    left, right = st.columns(2)
 
-    with col_a:
+    with left:
         st.markdown("#### GeoJSON")
-        st.write("Geometri, özellikler ve renk bilgileri korunur.")
+        st.write("Geometri ve özellikler korunur.")
         st.download_button(
             "⬇️ GeoJSON indir",
             data=geojson_bytes,
             file_name="hazar_ogur_atlas.geojson",
             mime="application/geo+json",
             use_container_width=True,
+            disabled=not visible_features,
         )
 
-    with col_b:
+    with right:
         st.markdown("#### CSV")
-        st.write("Tablo verilerini elektronik tabloda aç.")
+        st.write("Tablo verilerini Excel veya başka araçlarda aç.")
         st.download_button(
             "⬇️ CSV indir",
             data=csv_buffer.getvalue().encode("utf-8-sig"),
             file_name="hazar_ogur_atlas.csv",
             mime="text/csv",
             use_container_width=True,
+            disabled=not visible_features,
         )
 
     st.info(
-        "CSV dışa aktarımındaki geometry alanı GeoJSON geometri nesnesini "
-        "JSON metni olarak içerir. CSV yüklemede ise WKT geometry veya "
-        "lon/lat koordinat sütunları desteklenir."
+        "CSV dosyasındaki geometry alanı WKT biçimindedir. "
+        "Bu uygulama CSV yüklerken WKT ve GeoJSON geometri metnini "
+        "ve ayrıca start_lon/start_lat/end_lon/end_lat veya lon/lat "
+        "koordinat sütunlarını destekler."
     )
+
+
+# ------------------------------------------------------------
+# HAKKINDA
+# ------------------------------------------------------------
 
 with tab_about:
-    st.markdown("### ⓘ Atlas hakkında")
+    st.markdown("### ⓘ Hazar–Oğur Atlası hakkında")
+
     st.markdown(
         """
-        **Hazar–Oğur Atlası**, coğrafi özellikleri harita üzerinde incelemek
-        için hazırlanmış etkileşimli bir prototiptir.
+        Bu uygulama, coğrafi özellikleri etkileşimli harita üzerinde
+        incelemek için hazırlanmış bağımsız bir Streamlit prototipidir.
 
         **Özellikler**
-        - OpenStreetMap taban haritası
+        - OpenStreetMap varsayılan taban haritası
+        - İsteğe bağlı koyu ve açık alternatif haritalar
         - Nokta, çizgi ve poligon geometrileri
-        - Katman kontrolü, koordinat gösterimi ve tam ekran
-        - GeoJSON, JSON ve CSV veri yükleme
+        - Renkli etiketler ve tekilleştirilmiş lejant
+        - Arama, grup ve geometri filtreleri
+        - GeoJSON, JSON ve CSV yükleme
         - CSV ve GeoJSON dışa aktarma
 
-        **Bilimsel kullanım notu**
+        **Bilimsel doğrulama notu**
 
-        Haritadaki isimler, açıklamalar ve güzergâhlar başlangıç veri
-        kümesinden gelir. Tarihî doğruluk, tarihlendirme, kaynakça ve
-        koordinat doğrulaması ayrı bir araştırma süreci gerektirir.
-        Görselleştirme tek başına tarihî bir iddiayı doğrulamaz.
+        Haritadaki adlar, açıklamalar ve güzergâhlar örnek veri kümesinden
+        gelir. Tarihî doğruluk, kaynakça, tarihlendirme ve koordinatların
+        güvenilirliği ayrıca doğrulanmalıdır. Harita çizimi tek başına
+        tarihî bir iddiayı kanıtlamaz.
         """
     )
+
+    st.markdown(f"**Uygulama sürümü:** {APP_VERSION}")
+
+
+# ============================================================
+# 10. ALT BİLGİ
+# ============================================================
 
 st.markdown(
     """
     <div class="footer">
-        Hazar–Oğur Atlası · Streamlit + Folium · OpenStreetMap
-        <br>OpenStreetMap harita verisi ve atıf koşulları:
-        © OpenStreetMap contributors
+        <b>Hazar–Oğur Atlası</b> · Streamlit + Folium + Shapely
+        <br>
+        Harita verisi ve atıf: © OpenStreetMap contributors.
+        <br>
+        OpenStreetMap standart döşemeleri için kullanım politikalarına uyulmalıdır.
     </div>
     """,
     unsafe_allow_html=True,
