@@ -1,348 +1,197 @@
-
 from __future__ import annotations
-
+import html
 import json
-from io import BytesIO
+import re
 from pathlib import Path
-from typing import Any
-
-import geopandas as gpd
-import pandas as pd
-from shapely import wkt
-from shapely.geometry import Point, shape
+import folium
+from branca.element import Element
 
 
-MODULE_DIR = Path(__file__).resolve().parent
-DATA_FILE = MODULE_DIR / "hazar_ogur.geojson"
-DEFAULT_CRS = "EPSG:4326"
-DEFAULT_COLOR = "#5470C6"
+def _safe_color(value: object) -> str:
+    color = str(value or "#64748b").strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        return color
+    return "#64748b"
 
 
-class DataValidationError(ValueError):
-    """Veri doğrulama hatası."""
+def create_map_from_geojson(
+    geojson_path: str | Path,
+    height: int = 650,
+) -> folium.Map:
+    """GeoJSON özelliklerinden renkli harita, etiket ve lejant oluşturur."""
+    path = Path(geojson_path)
 
+    with path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
 
-def _normalise_gdf(
-    gdf: gpd.GeoDataFrame,
-) -> gpd.GeoDataFrame:
-    """Alan adlarını standartlaştırır ve geometriyi doğrular."""
+    if data.get("type") != "FeatureCollection":
+        raise ValueError("Dosya bir GeoJSON FeatureCollection olmalıdır.")
 
-    if not isinstance(gdf, gpd.GeoDataFrame):
-        raise DataValidationError(
-            "Veri GeoDataFrame biçiminde olmalıdır."
-        )
+    features = data.get("features", [])
+    if not features:
+        raise ValueError("GeoJSON içinde gösterilecek kayıt bulunamadı.")
 
-    gdf = gdf.copy()
-    gdf.columns = [str(c).strip() for c in gdf.columns]
+    bounds = []
+    legend_items = []
 
-    if gdf.columns.duplicated().any():
-        raise DataValidationError(
-            "Dosyada yinelenen sütun adları var."
-        )
-
-    aliases = {
-        "name": ("nombre", "title", "baslik", "başlık"),
-        "description": ("descripcion", "aciklama", "açıklama"),
-        "group": ("grupo", "category", "kategori"),
-        "color": ("renk",),
-        "label": ("etiket",),
-    }
-
-    for canonical, alternatives in aliases.items():
-        if canonical not in gdf.columns:
-            for alternative in alternatives:
-                if alternative in gdf.columns:
-                    gdf = gdf.rename(
-                        columns={alternative: canonical}
-                    )
-                    break
-
-    if "geometry" not in gdf.columns:
-        raise DataValidationError(
-            "Geometri sütunu bulunamadı."
-        )
-
-    if gdf.empty:
-        raise DataValidationError("Veri kümesi boş.")
-
-    if gdf.geometry.isna().any():
-        raise DataValidationError(
-            "Bazı kayıtlarda geometri eksik."
-        )
-
-    if gdf.geometry.is_empty.any():
-        raise DataValidationError(
-            "Bazı kayıtlarda geometri boş."
-        )
-
-    if gdf.crs is None:
-        gdf = gdf.set_crs(DEFAULT_CRS)
-
-    defaults = {
-        "name": "",
-        "description": "",
-        "group": "Sınıflandırılmamış",
-        "color": DEFAULT_COLOR,
-        "label": "",
-    }
-
-    for column, default in defaults.items():
-        if column not in gdf.columns:
-            gdf[column] = default
-
-    gdf["name"] = gdf["name"].fillna("").astype(str)
-    gdf["description"] = (
-        gdf["description"].fillna("").astype(str)
-    )
-    gdf["group"] = (
-        gdf["group"].fillna("Sınıflandırılmamış").astype(str)
-    )
-    gdf["color"] = (
-        gdf["color"].fillna(DEFAULT_COLOR).astype(str)
-    )
-    gdf["label"] = (
-        gdf["label"].fillna("").astype(str)
+    fmap = folium.Map(
+        location=[45.0, 45.0],
+        zoom_start=4,
+        tiles="CartoDB positron",
+        control_scale=True,
     )
 
-    for index in gdf.index:
-        if not gdf.at[index, "name"].strip():
-            gdf.at[index, "name"] = f"Kayıt {index + 1}"
-
-    empty_labels = gdf["label"].str.strip().eq("")
-    gdf.loc[empty_labels, "label"] = gdf.loc[
-        empty_labels, "name"
-    ]
-
-    gdf["nombre"] = gdf["name"]
-    gdf["descripcion"] = gdf["description"]
-    gdf["grupo"] = gdf["group"]
-    gdf["tipo_geometria"] = gdf.geometry.geom_type
-
-    return gdf
-
-
-def _read_geojson(content: bytes) -> gpd.GeoDataFrame:
-    try:
-        document: Any = json.loads(content.decode("utf-8-sig"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise DataValidationError(
-            f"JSON/GeoJSON okunamadı: {exc}"
-        ) from exc
-
-    if not isinstance(document, dict):
-        raise DataValidationError(
-            "GeoJSON kök değeri nesne olmalıdır."
-        )
-
-    if document.get("type") == "Feature":
-        document = {
-            "type": "FeatureCollection",
-            "features": [document],
-        }
-
-    if document.get("type") != "FeatureCollection":
-        raise DataValidationError(
-            "GeoJSON Feature veya FeatureCollection olmalıdır."
-        )
-
-    features = document.get("features")
-
-    if not isinstance(features, list) or not features:
-        raise DataValidationError(
-            "GeoJSON içinde features kayıtları bulunamadı."
-        )
-
-    for index, feature in enumerate(features, start=1):
-        if not isinstance(feature, dict):
-            raise DataValidationError(
-                f"{index}. kayıt geçerli bir nesne değil."
-            )
-
-        if feature.get("type") != "Feature":
-            raise DataValidationError(
-                f"{index}. kaydın türü Feature olmalıdır."
-            )
-
+    for feature in features:
+        props = feature.get("properties") or {}
         geometry = feature.get("geometry")
-        if not isinstance(geometry, dict):
-            raise DataValidationError(
-                f"{index}. kaydın geometrisi eksik."
+        if not geometry:
+            continue
+
+        name = str(props.get("name", "İsimsiz kayıt"))
+        description = str(props.get("description", ""))
+        color = _safe_color(props.get("color"))
+
+        # GeoJSON koordinatları [longitude, latitude] sırasındadır.
+        geom_type = geometry.get("type")
+        coords = geometry.get("coordinates")
+
+        popup_html = (
+            f"<b>{html.escape(name)}</b><br>"
+            f"{html.escape(description)}"
+        )
+
+        if geom_type == "Point":
+            lon, lat = coords
+            bounds.append([lat, lon])
+
+            folium.CircleMarker(
+                location=[lat, lon],
+                radius=6,
+                color=color,
+                weight=2,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.9,
+                tooltip=name,
+                popup=folium.Popup(popup_html, max_width=300),
+            ).add_to(fmap)
+
+            # Nokta etiketini verilen ofsetlerle yerleştir.
+            dx = float(props.get("label_dx", 0.5))
+            dy = float(props.get("label_dy", 0.5))
+
+            folium.Marker(
+                location=[lat + dy, lon + dx],
+                icon=folium.DivIcon(
+                    html=(
+                        '<div style="'
+                        f'color:{color};'
+                        'font-size:12px;'
+                        'font-weight:700;'
+                        'white-space:nowrap;'
+                        'text-shadow:1px 1px 2px white,'
+                        '-1px -1px 2px white;'
+                        '">'
+                        f'{html.escape(name)}'
+                        '</div>'
+                    )
+                ),
+                interactive=False,
+            ).add_to(fmap)
+
+        elif geom_type == "LineString":
+            # GeoJSON: [lon, lat] -> Folium: [lat, lon]
+            latlon = [[lat, lon] for lon, lat in coords]
+            bounds.extend(latlon)
+
+            folium.PolyLine(
+                locations=latlon,
+                color=color,
+                weight=4,
+                opacity=0.85,
+                tooltip=name,
+                popup=folium.Popup(popup_html, max_width=300),
+            ).add_to(fmap)
+
+            # Çizgi etiketi, iki uç noktanın orta noktasına yerleştirilir.
+            mid = len(latlon) // 2
+            lat, lon = latlon[mid]
+
+            dx = float(props.get("label_dx", 0.5))
+            dy = float(props.get("label_dy", 0.5))
+
+            folium.Marker(
+                location=[lat + dy, lon + dx],
+                icon=folium.DivIcon(
+                    html=(
+                        '<div style="'
+                        f'color:{color};'
+                        'font-size:12px;'
+                        'font-weight:700;'
+                        'white-space:nowrap;'
+                        'text-shadow:1px 1px 2px white,'
+                        '-1px -1px 2px white;'
+                        '">'
+                        f'{html.escape(name)}'
+                        '</div>'
+                    )
+                ),
+                interactive=False,
+            ).add_to(fmap)
+
+        else:
+            # Desteklenmeyen geometri türlerini sessizce yanlış çizme.
+            raise ValueError(
+                f"Desteklenmeyen geometri türü: {geom_type!r} ({name})"
             )
 
-        try:
-            shape(geometry)
-        except Exception as exc:
-            raise DataValidationError(
-                f"{index}. kaydın geometrisi geçersiz."
-            ) from exc
-
-    try:
-        gdf = gpd.GeoDataFrame.from_features(
-            features,
-            crs=DEFAULT_CRS,
-        )
-    except Exception as exc:
-        raise DataValidationError(
-            f"GeoJSON GeoDataFrame'e dönüştürülemedi: {exc}"
-        ) from exc
-
-    return gdf
-
-
-def load_default_data() -> gpd.GeoDataFrame:
-    """modules/hazar_ogur.geojson dosyasını yükler."""
-
-    if not DATA_FILE.is_file():
-        raise FileNotFoundError(
-            f"Varsayılan veri dosyası bulunamadı: {DATA_FILE}"
+        legend_items.append(
+            f"""
+            <div style="display:flex;align-items:center;gap:8px;margin:6px 0;">
+              <span style="
+                display:inline-block;
+                width:12px;height:12px;
+                border-radius:50%;
+                background:{color};
+                border:1px solid #555;
+                flex-shrink:0;
+              "></span>
+              <span>{html.escape(name)}</span>
+            </div>
+            """
         )
 
-    return _normalise_gdf(
-        _read_geojson(DATA_FILE.read_bytes())
+    if bounds:
+        fmap.fit_bounds(bounds, padding=(25, 25))
+
+    legend_html = f"""
+    <div style="
+      position:fixed;
+      bottom:25px;
+      left:25px;
+      z-index:9999;
+      background:rgba(255,255,255,0.96);
+      color:#222;
+      padding:12px 14px;
+      border:1px solid #aaa;
+      border-radius:8px;
+      box-shadow:0 2px 8px rgba(0,0,0,.25);
+      max-height:40vh;
+      overflow-y:auto;
+      font-size:12px;
+    ">
+      <div style="font-weight:bold;margin-bottom:8px;">
+        Hazar–Oğur toplulukları
+      </div>
+      {''.join(legend_items)}
+    </div>
+    """
+
+    fmap.get_root().html.add_child(Element(legend_html))
+    fmap.get_root().header.add_child(
+        Element(
+            f"<style>html,body{{height:{int(height)}px;}}</style>"
+        )
     )
 
-
-def _read_csv(content: bytes) -> gpd.GeoDataFrame:
-    try:
-        df = pd.read_csv(BytesIO(content))
-    except Exception as exc:
-        raise DataValidationError(
-            f"CSV dosyası okunamadı: {exc}"
-        ) from exc
-
-    df.columns = [str(c).strip() for c in df.columns]
-
-    if "geometry" in df.columns:
-        try:
-            geometries = df["geometry"].apply(
-                lambda value: (
-                    wkt.loads(value)
-                    if isinstance(value, str) and value.strip()
-                    else None
-                )
-            )
-        except Exception as exc:
-            raise DataValidationError(
-                f"CSV içindeki WKT geometrisi geçersiz: {exc}"
-            ) from exc
-
-        df = df.drop(columns=["geometry"])
-        return gpd.GeoDataFrame(
-            df,
-            geometry=geometries,
-            crs=DEFAULT_CRS,
-        )
-
-    lookup = {
-        str(column).lower(): column
-        for column in df.columns
-    }
-
-    lon_column = next(
-        (
-            lookup[key]
-            for key in ("longitude", "lon", "lng", "boylam")
-            if key in lookup
-        ),
-        None,
-    )
-    lat_column = next(
-        (
-            lookup[key]
-            for key in ("latitude", "lat", "enlem")
-            if key in lookup
-        ),
-        None,
-    )
-
-    if lon_column is None or lat_column is None:
-        raise DataValidationError(
-            "CSV içinde geometry (WKT) veya boylam/enlem sütunları gerekli."
-        )
-
-    lon = pd.to_numeric(df[lon_column], errors="coerce")
-    lat = pd.to_numeric(df[lat_column], errors="coerce")
-
-    if (
-        lon.isna().any()
-        or lat.isna().any()
-        or (~lon.between(-180, 180)).any()
-        or (~lat.between(-90, 90)).any()
-    ):
-        raise DataValidationError(
-            "CSV koordinatları geçersiz."
-        )
-
-    geometry = [
-        Point(float(x), float(y))
-        for x, y in zip(lon, lat)
-    ]
-
-    return gpd.GeoDataFrame(
-        df,
-        geometry=geometry,
-        crs=DEFAULT_CRS,
-    )
-
-
-def validate_and_load_uploaded_file(uploaded_file) -> gpd.GeoDataFrame:
-    """Streamlit tarafından yüklenen GeoJSON, JSON veya CSV dosyasını okur."""
-
-    if uploaded_file is None:
-        raise DataValidationError("Dosya seçilmedi.")
-
-    suffix = Path(
-        str(getattr(uploaded_file, "name", ""))
-    ).suffix.lower()
-
-    if suffix not in {".geojson", ".json", ".csv"}:
-        raise DataValidationError(
-            "Yalnızca GeoJSON, JSON ve CSV destekleniyor."
-        )
-
-    content = uploaded_file.getvalue()
-
-    if not content:
-        raise DataValidationError("Yüklenen dosya boş.")
-
-    if suffix in {".geojson", ".json"}:
-        gdf = _read_geojson(content)
-    else:
-        gdf = _read_csv(content)
-
-    return _normalise_gdf(gdf)
-
-
-def export_geojson(gdf: gpd.GeoDataFrame) -> str:
-    """GeoDataFrame'i GeoJSON metnine dönüştürür."""
-
-    data = _normalise_gdf(gdf).to_crs(DEFAULT_CRS)
-    return data.to_json(drop_id=False, ensure_ascii=False)
-
-
-def export_csv(gdf: gpd.GeoDataFrame) -> str:
-    """Geometriyi WKT olarak içeren CSV üretir."""
-
-    data = _normalise_gdf(gdf).copy()
-    data["geometry"] = data.geometry.to_wkt()
-    return data.to_csv(index=False)
-
-
-def get_data_summary(
-    gdf: gpd.GeoDataFrame,
-) -> dict[str, Any]:
-    """Veri kümesinin özetini döndürür."""
-
-    data = _normalise_gdf(gdf)
-
-    return {
-        "record_count": int(len(data)),
-        "geometry_types": sorted(
-            data.geometry.geom_type.dropna().unique().tolist()
-        ),
-        "groups": sorted(
-            data["group"].dropna().unique().tolist()
-        ),
-        "crs": str(data.crs),
-        "columns": data.columns.tolist(),
-    }
+    return fmap
