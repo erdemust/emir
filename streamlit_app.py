@@ -1,5 +1,3 @@
-<<<<<<< HEAD
-# app.py
 import streamlit as st
 from streamlit_folium import st_folium
 
@@ -590,4 +588,4 @@ st.caption(
     "CSV dosyasında geometri WKT biçiminde saklanır. "
     "GeoJSON dosyasında her seçili kayıt ayrı bir Feature'dır."
 )
->>>>>>> 26f3de71650afe95c1838d59f6254e0fbf3b1387
+
