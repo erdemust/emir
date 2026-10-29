@@ -1,21 +1,21 @@
 
 from __future__ import annotations
 
+import csv
+import html
+import io
 import json
+import math
+import re
 from pathlib import Path
 
-import geopandas as gpd
+import folium
 import pandas as pd
 import streamlit as st
-
-from modules.data_loader import (
-    DataValidationError,
-    export_csv,
-    export_geojson,
-    get_data_summary,
-    load_default_data,
-    validate_and_load_uploaded_file,
-)
+from branca.element import Element
+from shapely import wkt
+from shapely.geometry import shape, mapping
+from streamlit_folium import st_folium
 
 
 # ============================================================
@@ -23,224 +23,444 @@ from modules.data_loader import (
 # ============================================================
 
 st.set_page_config(
-    page_title="Hazar ve Oğur | Tarihsel-Coğrafi İnceleme",
+    page_title="Hazar–Oğur Tarihsel Coğrafya",
     page_icon="🗺️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-
-# ============================================================
-# SABİTLER
-# ============================================================
-
 APP_DIR = Path(__file__).resolve().parent
-MODULE_DIR = APP_DIR / "modules"
-DATA_FILE = MODULE_DIR / "hazar_ogur.geojson"
+DATA_FILE = APP_DIR / "modules" / "hazar_ogur.geojson"
 
-DEFAULT_COLOR = "#5470C6"
+DEFAULT_COLOR = "#64748b"
 
 
 # ============================================================
-# OTURUM VE VERİ YÜKLEME
+# GÖMÜLÜ VARSAYILAN VERİ
+# GeoJSON dosyası bulunamazsa uygulama yine açılır.
 # ============================================================
 
-def initialise_session() -> None:
-    """İlk açılışta varsayılan veriyi yükler."""
+DEFAULT_FEATURES = [
+    {
+        "type": "Feature",
+        "properties": {
+            "name": "1. Ujur / Uygur",
+            "description": "Orkhon -> Jetisu",
+            "color": "#2563eb",
+            "label_dx": 1.5,
+            "label_dy": 0.8,
+            "group": "Sınıflandırılmamış",
+        },
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [[102, 47], [75, 45]],
+        },
+    },
+    {
+        "type": "Feature",
+        "properties": {
+            "name": "2. Tauris",
+            "description": "Kirim (yerel)",
+            "color": "#059669",
+            "label_dx": 0.9,
+            "label_dy": -1.7,
+            "group": "Sınıflandırılmamış",
+        },
+        "geometry": {
+            "type": "Point",
+            "coordinates": [34, 45],
+        },
+    },
+    {
+        "type": "Feature",
+        "properties": {
+            "name": "3. Avar",
+            "description": "Kafkasya -> Pannonia",
+            "color": "#dc2626",
+            "label_dx": 0.9,
+            "label_dy": 0.6,
+            "group": "Sınıflandırılmamış",
+        },
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [[47, 42], [19, 47]],
+        },
+    },
+    {
+        "type": "Feature",
+        "properties": {
+            "name": "4. Uauz / Oguz",
+            "description": "Aral/Hazar -> Anadolu",
+            "color": "#d97706",
+            "label_dx": 0.9,
+            "label_dy": -1.5,
+            "group": "Sınıflandırılmamış",
+        },
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [[60, 43], [35, 39]],
+        },
+    },
+    {
+        "type": "Feature",
+        "properties": {
+            "name": "5. Bizal / Barsil",
+            "description": "Volga-Don / K. Kafkasya",
+            "color": "#7c3aed",
+            "label_dx": 1.0,
+            "label_dy": 1.2,
+            "group": "Sınıflandırılmamış",
+        },
+        "geometry": {
+            "type": "Point",
+            "coordinates": [42, 48],
+        },
+    },
+    {
+        "type": "Feature",
+        "properties": {
+            "name": "6. Tarna",
+            "description": "Dagistan / Tarku",
+            "color": "#db2777",
+            "label_dx": 1.0,
+            "label_dy": -1.4,
+            "group": "Sınıflandırılmamış",
+        },
+        "geometry": {
+            "type": "Point",
+            "coordinates": [47.5, 42.9],
+        },
+    },
+    {
+        "type": "Feature",
+        "properties": {
+            "name": "7. Khazar",
+            "description": "Asagi Volga / Itil",
+            "color": "#4f46e5",
+            "label_dx": 1.6,
+            "label_dy": 0.7,
+            "group": "Sınıflandırılmamış",
+        },
+        "geometry": {
+            "type": "Point",
+            "coordinates": [48, 46],
+        },
+    },
+    {
+        "type": "Feature",
+        "properties": {
+            "name": "8. Janur / Zagur",
+            "description": "Azak / Kuban",
+            "color": "#0891b2",
+            "label_dx": -7.2,
+            "label_dy": 0.9,
+            "group": "Sınıflandırılmamış",
+        },
+        "geometry": {
+            "type": "Point",
+            "coordinates": [39, 45.2],
+        },
+    },
+    {
+        "type": "Feature",
+        "properties": {
+            "name": "9. Bulgar",
+            "description": "Kuban -> Volga",
+            "color": "#ea580c",
+            "label_dx": 1.0,
+            "label_dy": 1.0,
+            "group": "Sınıflandırılmamış",
+        },
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [[39, 46.8], [49, 55]],
+        },
+    },
+    {
+        "type": "Feature",
+        "properties": {
+            "name": "10. Sabir / Suvar",
+            "description": "Bati Sibirya -> Kafkasya",
+            "color": "#16a34a",
+            "label_dx": 1.0,
+            "label_dy": -1.4,
+            "group": "Sınıflandırılmamış",
+        },
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [[75, 55], [47, 43]],
+        },
+    },
+]
 
-    if "gdf" not in st.session_state:
+
+# ============================================================
+# VERİ YÜKLEME VE NORMALİZASYON
+# ============================================================
+
+def safe_color(value):
+    color = str(value or DEFAULT_COLOR).strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        return color
+    return DEFAULT_COLOR
+
+
+def safe_offset(value, default=0.0):
+    try:
+        number = float(html.unescape(str(value)).replace("*", "").strip())
+        if math.isfinite(number):
+            return max(-20.0, min(20.0, number))
+    except (TypeError, ValueError):
+        pass
+    return default
+
+
+def normalize_properties(properties):
+    props = dict(properties or {})
+
+    aliases = {
+        "nombre": "name",
+        "descripcion": "description",
+        "descripción": "description",
+        "grupo": "group",
+        "categoria": "group",
+        "tipo_geometria": "geometry_type",
+    }
+
+    for old, new in aliases.items():
+        if new not in props and old in props:
+            props[new] = props[old]
+
+    props["name"] = str(props.get("name") or "İsimsiz kayıt")
+    props["description"] = str(props.get("description") or "")
+    props["group"] = str(props.get("group") or "Sınıflandırılmamış")
+    props["color"] = safe_color(props.get("color"))
+    props["label_dx"] = safe_offset(props.get("label_dx"), 0.5)
+    props["label_dy"] = safe_offset(props.get("label_dy"), 0.5)
+
+    return props
+
+
+def normalize_feature(feature):
+    if not isinstance(feature, dict):
+        raise ValueError("Her kayıt bir GeoJSON Feature olmalıdır.")
+
+    geometry = feature.get("geometry")
+    if not geometry:
+        raise ValueError("Bir kaydın geometry alanı eksik.")
+
+    geom = shape(geometry)
+    if geom.is_empty:
+        raise ValueError("Boş geometri bulundu.")
+
+    if geom.geom_type not in {
+        "Point",
+        "MultiPoint",
+        "LineString",
+        "MultiLineString",
+        "Polygon",
+        "MultiPolygon",
+    }:
+        raise ValueError(f"Desteklenmeyen geometri: {geom.geom_type}")
+
+    return {
+        "type": "Feature",
+        "properties": normalize_properties(feature.get("properties")),
+        "geometry": mapping(geom),
+    }
+
+
+def normalize_collection(data):
+    if data.get("type") == "Feature":
+        features = [data]
+    elif data.get("type") == "FeatureCollection":
+        features = data.get("features", [])
+    else:
+        raise ValueError("GeoJSON Feature veya FeatureCollection olmalıdır.")
+
+    if not features:
+        raise ValueError("Veri kümesinde kayıt bulunamadı.")
+
+    return {
+        "type": "FeatureCollection",
+        "features": [normalize_feature(f) for f in features],
+    }
+
+
+def load_default_data():
+    # Depodaki dosya varsa onu kullan; yoksa gömülü örnek veriye dön.
+    if DATA_FILE.is_file():
         try:
-            st.session_state.gdf = load_default_data()
-            st.session_state.data_source = str(DATA_FILE)
-            st.session_state.load_error = None
+            with DATA_FILE.open("r", encoding="utf-8-sig") as file:
+                return normalize_collection(json.load(file))
         except Exception as exc:
-            st.session_state.gdf = None
-            st.session_state.data_source = None
-            st.session_state.load_error = str(exc)
+            st.warning(
+                f"Varsayılan GeoJSON okunamadı; gömülü örnek veri kullanılacak. "
+                f"Ayrıntı: {exc}"
+            )
+
+    return normalize_collection({
+        "type": "FeatureCollection",
+        "features": DEFAULT_FEATURES,
+    })
 
 
-def reset_data() -> None:
-    """Veriyi varsayılan GeoJSON dosyasından yeniden yükler."""
+def load_uploaded_data(uploaded_file):
+    raw = uploaded_file.getvalue()
+    filename = uploaded_file.name.lower()
 
-    st.session_state.gdf = load_default_data()
-    st.session_state.data_source = str(DATA_FILE)
-    st.session_state.load_error = None
+    if filename.endswith(".csv"):
+        frame = pd.read_csv(io.BytesIO(raw), encoding="utf-8-sig")
 
+        # CSV başlıklarındaki HTML ve Markdown kalıntılarını düzelt.
+        frame.columns = [
+            html.unescape(str(col)).strip().lstrip("*").strip()
+            for col in frame.columns
+        ]
 
-initialise_session()
+        rename = {}
+        for col in frame.columns:
+            lower = col.casefold()
+            if lower == "nombre":
+                rename[col] = "name"
+            elif lower in {"descripcion", "descripción"}:
+                rename[col] = "description"
+            elif lower == "grupo":
+                rename[col] = "group"
+            elif lower in {"tipo_geometria", "tipo_geometría"}:
+                rename[col] = "geometry_type"
+        frame = frame.rename(columns=rename)
+
+        if "geometry" not in frame.columns:
+            raise ValueError(
+                "CSV dosyasında WKT geometri içeren 'geometry' sütunu gerekli."
+            )
+
+        features = []
+        for row_number, row in frame.iterrows():
+            geometry_text = str(row["geometry"]).strip()
+            if not geometry_text or geometry_text.lower() == "nan":
+                raise ValueError(f"{row_number + 2}. satırın geometrisi boş.")
+
+            geom = wkt.loads(geometry_text)
+            properties = row.drop(labels=["geometry"]).to_dict()
+            properties = {
+                key: None if pd.isna(value) else value
+                for key, value in properties.items()
+            }
+
+            features.append({
+                "type": "Feature",
+                "properties": properties,
+                "geometry": mapping(geom),
+            })
+
+        return normalize_collection({
+            "type": "FeatureCollection",
+            "features": features,
+        })
+
+    data = json.loads(raw.decode("utf-8-sig"))
+    return normalize_collection(data)
 
 
 # ============================================================
-# YARDIMCI FONKSİYONLAR
+# HARİTA
 # ============================================================
 
-def get_column(
-    df: pd.DataFrame,
-    candidates: tuple[str, ...],
-) -> str | None:
-    """Mevcut sütunlar arasından ilk eşleşeni döndürür."""
+def geometry_coordinates(geometry):
+    """Bounds için koordinatları [lon, lat] çiftleri olarak döndürür."""
+    geom = shape(geometry)
+    result = []
 
-    for candidate in candidates:
-        if candidate in df.columns:
-            return candidate
-    return None
+    def visit(obj):
+        if isinstance(obj, (list, tuple)):
+            if (
+                len(obj) >= 2
+                and isinstance(obj[0], (int, float))
+                and isinstance(obj[1], (int, float))
+            ):
+                result.append([float(obj[0]), float(obj[1])])
+            else:
+                for item in obj:
+                    visit(item)
 
-
-def display_dataframe(
-    gdf: gpd.GeoDataFrame,
-) -> pd.DataFrame:
-    """Geometri sütununu kullanıcı dostu tabloya dönüştürür."""
-
-    table = pd.DataFrame(gdf.drop(columns=["geometry"]).copy())
-
-    # Harita ve CSV dışa aktarma için geometri korunur;
-    # ekrandaki tabloda geometri nesnesi gösterilmez.
-    return table
-
-
-def filtered_data(
-    gdf: gpd.GeoDataFrame,
-    selected_groups: list[str],
-    search_text: str,
-) -> gpd.GeoDataFrame:
-    """Grup ve metin filtrelerini uygular."""
-
-    result = gdf.copy()
-
-    if selected_groups and "group" in result.columns:
-        result = result[
-            result["group"].isin(selected_groups)
-        ]
-
-    query = search_text.strip().casefold()
-
-    if query:
-        searchable_columns = [
-            column
-            for column in (
-                "name",
-                "description",
-                "group",
-                "label",
-            )
-            if column in result.columns
-        ]
-
-        if searchable_columns:
-            mask = pd.Series(
-                False,
-                index=result.index,
-                dtype=bool,
-            )
-
-            for column in searchable_columns:
-                mask |= (
-                    result[column]
-                    .fillna("")
-                    .astype(str)
-                    .str.casefold()
-                    .str.contains(query, regex=False)
-                )
-
-            result = result[mask]
-
+    visit(geom.__geo_interface__.get("coordinates", []))
     return result
 
 
-def build_map(
-    gdf: gpd.GeoDataFrame,
-):
-    """
-    Folium haritası üretir; karma geometri türlerini, kayıt renklerini,
-    etiket ofsetlerini ve otomatik lejantı destekler.
-    """
-    import html
-    import re
+def make_label(feature):
+    props = feature["properties"]
+    geom = shape(feature["geometry"])
 
-    try:
-        import folium
-        from folium.features import GeoJsonTooltip
-        from branca.element import Element
-        from streamlit_folium import st_folium
-    except ImportError as exc:
-        raise RuntimeError(
-            "İnteraktif harita için folium, branca ve "
-            "streamlit-folium paketleri kurulmalıdır."
-        ) from exc
+    if geom.geom_type == "Point":
+        lon, lat = geom.x, geom.y
+    else:
+        point = geom.interpolate(0.5, normalized=True) if geom.geom_type == "LineString" else geom.representative_point()
+        lon, lat = point.x, point.y
 
-    if gdf.empty:
-        raise ValueError("Haritada gösterilecek kayıt yok.")
-    if "geometry" not in gdf.columns:
-        raise ValueError("Veri kümesinde geometry sütunu bulunamadı.")
+    dx = props["label_dx"]
+    dy = props["label_dy"]
 
-    geographic = gdf.copy()
-    if geographic.crs is None:
-        # GeoJSON koordinatları WGS84'dür; diğer kaynaklar için
-        # CRS tahmini yapmak güvenli olmadığından açık hata ver.
-        raise ValueError(
-            "Koordinat sistemi tanımlanmamış. Veriye doğru CRS (ör. EPSG:4326) atanmalı."
-        )
+    # Büyük ofsetler koordinat cinsindendir, piksel cinsinden değildir.
+    return [lat + dy, lon + dx]
 
-    geographic = geographic.to_crs("EPSG:4326")
-    geographic = geographic[
-        geographic.geometry.notna() & ~geographic.geometry.is_empty
-    ].copy()
-    if geographic.empty:
-        raise ValueError("Geçerli geometri içeren kayıt bulunamadı.")
 
-    minx, miny, maxx, maxy = geographic.total_bounds
-    if not all(pd.notna(v) for v in (minx, miny, maxx, maxy)):
-        raise ValueError("Harita sınırları hesaplanamadı.")
+def create_map(features, tile_choice="CartoDB Positron"):
+    tile_map = {
+        "CartoDB Positron": "CartoDB positron",
+        "OpenStreetMap": "OpenStreetMap",
+        "Esri Uydu": "Esri.WorldImagery",
+    }
 
     fmap = folium.Map(
-        location=[(miny + maxy) / 2, (minx + maxx) / 2],
+        location=[45, 45],
         zoom_start=4,
+        tiles=tile_map.get(tile_choice, "CartoDB positron"),
         control_scale=True,
-        tiles="CartoDB positron",
-        prefer_canvas=True,
     )
 
-    def safe_color(value: object) -> str:
-        color = str(value or DEFAULT_COLOR).strip()
-        return color if re.fullmatch(r"#[0-9a-fA-F]{6}", color) else DEFAULT_COLOR
+    all_coords = []
+    legend_items = []
 
-    def safe_text(value: object, fallback: str = "") -> str:
-        if value is None or pd.isna(value):
-            return fallback
-        return html.escape(str(value))
+    for feature in features:
+        props = feature["properties"]
+        geometry = feature["geometry"]
+        geom = shape(geometry)
 
-    legend_items: list[str] = []
-    tooltip_fields = [
-        field for field in ("name", "description", "group", "period", "source_status")
-        if field in geographic.columns
-    ]
+        name = props["name"]
+        description = props["description"]
+        color = props["color"]
 
-    for _, row in geographic.iterrows():
-        geom = row.geometry
-        name_raw = row.get("name", row.get("label", "Kayıt"))
-        name = str(name_raw) if pd.notna(name_raw) else "Kayıt"
-        description = row.get("description", "")
-        color = safe_color(row.get("color", DEFAULT_COLOR))
-        name_html = safe_text(name, "Kayıt")
-        description_html = safe_text(description)
+        all_coords.extend(geometry_coordinates(geometry))
 
-        popup_html = (
-            '<div style="min-width:190px;max-width:320px">'
-            f'<div style="font-weight:700;color:{color};margin-bottom:5px">{name_html}</div>'
-            f'<div>{description_html}</div>'
-            '</div>'
+        popup = folium.Popup(
+            f"<b>{html.escape(name)}</b><br>"
+            f"{html.escape(description)}<br>"
+            f"<small>{html.escape(geom.geom_type)}</small>",
+            max_width=350,
         )
-        popup = folium.Popup(popup_html, max_width=350)
 
-        # Her geometri türünü ayrı ele alarak karma FeatureCollection'ı destekle.
-        if geom.geom_type in ("Point", "MultiPoint"):
-            points = list(geom.geoms) if geom.geom_type == "MultiPoint" else [geom]
-            for point in points:
+        if geom.geom_type == "Point":
+            lon, lat = geom.x, geom.y
+            folium.CircleMarker(
+                [lat, lon],
+                radius=7,
+                color=color,
+                weight=2,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.9,
+                tooltip=name,
+                popup=popup,
+            ).add_to(fmap)
+
+        elif geom.geom_type == "MultiPoint":
+            for point in geom.geoms:
                 folium.CircleMarker(
-                    location=[point.y, point.x],
+                    [point.y, point.x],
                     radius=6,
                     color=color,
-                    weight=2,
                     fill=True,
                     fill_color=color,
                     fill_opacity=0.9,
@@ -248,523 +468,312 @@ def build_map(
                     popup=popup,
                 ).add_to(fmap)
 
-            # Etiket ofsetleri derece cinsindendir; yalnızca etiketin yerini etkiler.
-            point = points[0]
-            try:
-                dx = float(row.get("label_dx", 0.5))
-                dy = float(row.get("label_dy", 0.5))
-            except (TypeError, ValueError):
-                dx, dy = 0.5, 0.5
-
-            folium.Marker(
-                location=[point.y + dy, point.x + dx],
-                icon=folium.DivIcon(
-                    icon_size=(260, 24),
-                    icon_anchor=(0, 12),
-                    html=(
-                        '<div style="'
-                        f'color:{color};font-size:12px;font-weight:700;'
-                        'white-space:nowrap;'
-                        'text-shadow:-1px -1px 2px white,1px 1px 2px white;'
-                        '">'
-                        f'{name_html}</div>'
-                    ),
-                ),
-                interactive=False,
+        elif geom.geom_type == "LineString":
+            latlon = [[lat, lon] for lon, lat in geom.coords]
+            folium.PolyLine(
+                latlon,
+                color=color,
+                weight=4,
+                opacity=0.9,
+                tooltip=name,
+                popup=popup,
             ).add_to(fmap)
 
-        else:
-            # GeoJSON özelliğini koruyarak çizgi/poligon biçimlerini çiz.
-            feature = {
-                "type": "Feature",
-                "properties": {
-                    "name": name,
-                    "description": "" if pd.isna(description) else str(description),
-                    "group": str(row.get("group", "")),
-                    "color": color,
-                },
-                "geometry": json.loads(gpd.GeoSeries([geom], crs="EPSG:4326").to_json())[
-                    "features"
-                ][0]["geometry"],
-            }
+        elif geom.geom_type == "MultiLineString":
+            for line in geom.geoms:
+                folium.PolyLine(
+                    [[lat, lon] for lon, lat in line.coords],
+                    color=color,
+                    weight=4,
+                    opacity=0.9,
+                    tooltip=name,
+                    popup=popup,
+                ).add_to(fmap)
 
-            tooltip = None
-            if tooltip_fields:
-                feature["properties"].update({
-                    field: (
-                        "" if pd.isna(row.get(field)) else str(row.get(field))
-                    )
-                    for field in tooltip_fields
-                })
-                tooltip = GeoJsonTooltip(
-                    fields=tooltip_fields,
-                    aliases=[field.replace("_", " ").title() for field in tooltip_fields],
-                    sticky=True,
-                    localize=True,
-                )
-
-            layer = folium.GeoJson(
-                data=feature,
-                name=name,
-                style_function=lambda feature, c=color: {
+        elif geom.geom_type in {"Polygon", "MultiPolygon"}:
+            folium.GeoJson(
+                feature,
+                style_function=lambda _f, c=color: {
                     "color": c,
-                    "weight": 3,
-                    "opacity": 0.9,
+                    "weight": 2,
                     "fillColor": c,
-                    "fillOpacity": 0.18,
+                    "fillOpacity": 0.25,
                 },
-                tooltip=tooltip,
-                popup=folium.GeoJsonPopup(
-                    fields=["name", "description"],
-                    aliases=["Ad", "Açıklama"],
-                    labels=True,
-                    localize=True,
-                ),
-            )
-            layer.add_to(fmap)
-
-            # Çizgi etiketi yaklaşık orta konuma yerleştirilir.
-            if geom.geom_type in ("LineString", "MultiLineString"):
-                anchor = geom.interpolate(0.5, normalized=True) if geom.geom_type == "LineString" else geom.centroid
-            elif geom.geom_type in ("Polygon", "MultiPolygon"):
-                anchor = geom.representative_point()
-            else:
-                anchor = geom.centroid
-
-            try:
-                dx = float(row.get("label_dx", 0.5))
-                dy = float(row.get("label_dy", 0.5))
-            except (TypeError, ValueError):
-                dx, dy = 0.5, 0.5
-
-            folium.Marker(
-                location=[anchor.y + dy, anchor.x + dx],
-                icon=folium.DivIcon(
-                    icon_size=(280, 24),
-                    icon_anchor=(0, 12),
-                    html=(
-                        '<div style="'
-                        f'color:{color};font-size:12px;font-weight:700;'
-                        'white-space:nowrap;'
-                        'text-shadow:-1px -1px 2px white,1px 1px 2px white;'
-                        '">'
-                        f'{name_html}</div>'
-                    ),
-                ),
-                interactive=False,
+                tooltip=name,
+                popup=popup,
             ).add_to(fmap)
+
+        # Etiket
+        label_latlon = make_label(feature)
+        label_html = (
+            '<div style="'
+            f'color:{color};'
+            'font-size:12px;'
+            'font-weight:700;'
+            'white-space:nowrap;'
+            'text-shadow:1px 1px 2px white,'
+            '-1px -1px 2px white;'
+            '">'
+            f'{html.escape(name)}'
+            '</div>'
+        )
+        folium.Marker(
+            label_latlon,
+            icon=folium.DivIcon(html=label_html),
+            interactive=False,
+        ).add_to(fmap)
 
         legend_items.append(
-            '<div style="display:flex;align-items:center;gap:8px;margin:5px 0;">'
+            '<div style="display:flex;align-items:center;gap:8px;margin:6px 0;">'
             f'<span style="display:inline-block;width:12px;height:12px;'
-            f'border-radius:50%;background:{color};border:1px solid #555;'
-            f'flex-shrink:0"></span>'
-            f'<span>{name_html}</span></div>'
+            f'background:{color};border:1px solid #555;border-radius:50%;'
+            f'flex-shrink:0;"></span>'
+            f'<span>{html.escape(name)}</span>'
+            '</div>'
         )
 
-    legend_html = (
-        '<div style="position:fixed;bottom:22px;left:22px;z-index:9999;'
-        'background:rgba(255,255,255,.96);color:#222;padding:12px 14px;'
-        'border:1px solid #aaa;border-radius:8px;'
-        'box-shadow:0 2px 8px rgba(0,0,0,.22);'
-        'max-height:38vh;overflow-y:auto;max-width:310px;'
-        'font-size:12px;line-height:1.35">'
-        '<div style="font-weight:700;margin-bottom:8px">'
-        'Hazar–Oğur toplulukları ve güzergâhlar</div>'
-        + "".join(legend_items)
-        + "</div>"
-    )
+    if all_coords:
+        lons = [coord[0] for coord in all_coords]
+        lats = [coord[1] for coord in all_coords]
+        if min(lons) != max(lons) or min(lats) != max(lats):
+            fmap.fit_bounds([
+                [min(lats), min(lons)],
+                [max(lats), max(lons)],
+            ], padding=(30, 30))
+        else:
+            fmap.location = [lats[0], lons[0]]
+            fmap.zoom_start = 6
+
+    legend_html = f"""
+    <div style="
+        position:fixed;
+        bottom:22px;
+        left:22px;
+        z-index:9999;
+        background:rgba(255,255,255,.97);
+        color:#222;
+        padding:12px 14px;
+        border:1px solid #aaa;
+        border-radius:8px;
+        box-shadow:0 2px 8px rgba(0,0,0,.25);
+        max-height:40vh;
+        max-width:300px;
+        overflow-y:auto;
+        font-size:12px;
+    ">
+      <div style="font-weight:bold;margin-bottom:8px;">
+        Hazar–Oğur toplulukları
+      </div>
+      {''.join(legend_items)}
+    </div>
+    """
     fmap.get_root().html.add_child(Element(legend_html))
 
-    # Birden fazla kayıtta tüm veri görünür alana sığdırılır.
-    if len(geographic) > 1 and minx != maxx and miny != maxy:
-        fmap.fit_bounds([[miny, minx], [maxy, maxx]], padding=(25, 25))
-    else:
-        fmap.location = [(miny + maxy) / 2, (minx + maxx) / 2]
-        fmap.zoom_start = 5
-
-    folium.LayerControl(collapsed=True).add_to(fmap)
-    return fmap, st_folium
-
-
-# ============================================================
-# BAŞLIK
-# ============================================================
-
-st.title("🗺️ Hazar ve Oğur")
-st.subheader("Tarihsel-Coğrafi İnceleme")
-
-st.markdown(
-    """
-    Bu uygulama, tarihsel adlandırmaların ve coğrafi kayıtların
-    harita üzerinde incelenmesi için hazırlanmıştır.
-    """
-)
-
-st.warning(
-    "Bilimsel uyarı: Varsayılan GeoJSON içindeki şematik "
-    "noktalar, tarihsel göç rotalarının veya kesin yerleşim "
-    "alanlarının kanıtı değildir. Tarihsel yorumlar için "
-    "birincil kaynak ve akademik yayın doğrulaması gerekir."
-)
-
-
-# ============================================================
-# VERİ YÜKLEME HATASI
-# ============================================================
-
-if st.session_state.gdf is None:
-    st.error(
-        "Varsayılan veri yüklenemedi. "
-        "Dosya yolunu ve GeoJSON içeriğini kontrol edin."
-    )
-
-    if st.session_state.load_error:
-        st.code(st.session_state.load_error)
-
-    st.info(
-        "Beklenen dosya: modules/hazar_ogur.geojson"
-    )
-
-    st.stop()
-
-
-# ============================================================
-# KENAR ÇUBUĞU
-# ============================================================
-
-with st.sidebar:
-    st.header("⚙️ Kontroller")
-
-    st.caption("Veri kaynağı")
-    st.code(
-        str(st.session_state.data_source or DATA_FILE),
-        language=None,
-    )
-
-    st.divider()
-
-    st.subheader("Dosya yükle")
-
-    uploaded_file = st.file_uploader(
-        "GeoJSON, JSON veya CSV seç",
-        type=["geojson", "json", "csv"],
-        help=(
-            "Yüklenen veri bu oturumda geçerli veri kümesinin "
-            "yerini alır. Sayfa yenilenince varsayılan veri "
-            "yeniden yüklenebilir."
-        ),
-    )
-
-    if st.button(
-        "Yüklenen dosyayı uygula",
-        use_container_width=True,
-        disabled=uploaded_file is None,
-    ):
-        try:
-            new_gdf = validate_and_load_uploaded_file(
-                uploaded_file
-            )
-
-            st.session_state.gdf = new_gdf
-            st.session_state.data_source = uploaded_file.name
-            st.session_state.load_error = None
-
-            st.success("Dosya yüklendi.")
-            st.rerun()
-
-        except Exception as exc:
-            st.error(f"Dosya yüklenemedi: {exc}")
-
-    st.divider()
-
-    if st.button(
-        "↩️ Varsayılan verilere dön",
-        use_container_width=True,
-    ):
-        try:
-            reset_data()
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Varsayılan veri yüklenemedi: {exc}")
-
-    st.divider()
-
-    st.subheader("Filtreler")
-
-    current_gdf = st.session_state.gdf
-
-    if "group" in current_gdf.columns:
-        available_groups = sorted(
-            current_gdf["group"]
-            .dropna()
-            .astype(str)
-            .unique()
-            .tolist()
-        )
-    else:
-        available_groups = []
-
-    selected_groups = st.multiselect(
-        "Topluluk / kategori",
-        options=available_groups,
-        default=available_groups,
-    )
-
-    search_text = st.text_input(
-        "Metin ara",
-        placeholder="Örn. Hazar, Bulgar, Oğuz...",
-    )
-
-    show_table = st.checkbox(
-        "Veri tablosunu göster",
-        value=True,
-    )
-
-    show_details = st.checkbox(
-        "Kayıt ayrıntılarını göster",
-        value=True,
-    )
-
-
-# ============================================================
-# FİLTRELENMİŞ VERİ
-# ============================================================
-
-gdf = st.session_state.gdf
-
-try:
-    visible_gdf = filtered_data(
-        gdf=gdf,
-        selected_groups=selected_groups,
-        search_text=search_text,
-    )
-except Exception as exc:
-    st.error(f"Filtreleme hatası: {exc}")
-    st.stop()
-
-
-# ============================================================
-# ÖZET METRİKLERİ
-# ============================================================
-
-try:
-    summary = get_data_summary(gdf)
-except Exception as exc:
-    st.error(f"Veri özeti oluşturulamadı: {exc}")
-    st.stop()
-
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric(
-    "Toplam kayıt",
-    summary["record_count"],
-)
-
-col2.metric(
-    "Filtrelenmiş kayıt",
-    len(visible_gdf),
-)
-
-col3.metric(
-    "Geometri türü",
-    ", ".join(summary["geometry_types"]) or "—",
-)
-
-col4.metric(
-    "Kategori sayısı",
-    len(summary["groups"]),
-)
-
-st.caption(
-    f"Koordinat sistemi: {summary['crs']} · "
-    f"Veri kaynağı: {st.session_state.data_source}"
-)
-
-
-# ============================================================
-# HARİTA
-# ============================================================
-
-st.header("📍 Etkileşimli harita")
-
-if visible_gdf.empty:
-    st.warning(
-        "Seçili filtrelerle eşleşen kayıt bulunamadı."
-    )
-else:
-    try:
-        fmap, st_folium = build_map(visible_gdf)
-
-        st_folium(
-            fmap,
-            use_container_width=True,
-            height=600,
-            returned_objects=[],
-            key="hazar_ogur_map",
-        )
-
-    except Exception as exc:
-        st.error(
-            "Harita oluşturulamadı. requirements.txt "
-            "dosyasında folium ve streamlit-folium paketlerini "
-            "kontrol edin."
-        )
-        st.exception(exc)
-
-
-# ============================================================
-# VERİ TABLOSU
-# ============================================================
-
-if show_table:
-    st.header("📋 Veri kayıtları")
-
-    if visible_gdf.empty:
-        st.info("Gösterilecek tablo kaydı yok.")
-    else:
-        table = display_dataframe(visible_gdf)
-
-        st.dataframe(
-            table,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-
-# ============================================================
-# KAYIT AYRINTILARI
-# ============================================================
-
-if show_details:
-    st.header("🔎 Kayıt ayrıntıları")
-
-    if visible_gdf.empty:
-        st.info("Ayrıntı gösterilecek kayıt yok.")
-    else:
-        name_column = get_column(
-            visible_gdf,
-            ("name", "nombre", "label"),
-        )
-
-        if name_column is None:
-            st.info("Kayıt adı sütunu bulunamadı.")
-        else:
-            names = visible_gdf[name_column].astype(str).tolist()
-
-            selected_name = st.selectbox(
-                "İncelenecek kayıt",
-                options=names,
-            )
-
-            selected_rows = visible_gdf[
-                visible_gdf[name_column].astype(str)
-                == selected_name
-            ]
-
-            if not selected_rows.empty:
-                record = selected_rows.iloc[0]
-
-                st.subheader(selected_name)
-
-                description = record.get(
-                    "description",
-                    record.get("descripcion", ""),
-                )
-
-                if description:
-                    st.write(str(description))
-
-                detail_col1, detail_col2 = st.columns(2)
-
-                with detail_col1:
-                    st.markdown("**Kategori**")
-                    st.write(
-                        str(
-                            record.get(
-                                "group",
-                                record.get("grupo", "Belirtilmemiş"),
-                            )
-                        )
-                    )
-
-                    st.markdown("**Dönem**")
-                    st.write(
-                        str(record.get("period", "Belirtilmemiş"))
-                    )
-
-                with detail_col2:
-                    st.markdown("**Kaynak durumu**")
-                    st.write(
-                        str(
-                            record.get(
-                                "source_status",
-                                "Belirtilmemiş",
-                            )
-                        )
-                    )
-
-                    st.markdown("**Geometri türü**")
-                    st.write(
-                        str(record.geometry.geom_type)
-                    )
-
-                with st.expander("Tüm özellikler"):
-                    properties = record.drop(
-                        labels=["geometry"],
-                        errors="ignore",
-                    ).to_dict()
-
-                    st.json(properties)
+    return fmap
 
 
 # ============================================================
 # DIŞA AKTARMA
 # ============================================================
 
-st.header("📥 Veriyi dışa aktar")
-
-if visible_gdf.empty:
-    st.info(
-        "Dışa aktarılacak kayıt yok. Filtreleri değiştirin."
+def export_geojson(features):
+    return json.dumps(
+        {
+            "type": "FeatureCollection",
+            "features": features,
+        },
+        ensure_ascii=False,
+        indent=2,
     )
-else:
-    export_col1, export_col2 = st.columns(2)
 
-    try:
-        geojson_text = export_geojson(visible_gdf)
 
-        with export_col1:
-            st.download_button(
-                label="GeoJSON indir",
-                data=geojson_text.encode("utf-8"),
-                file_name="hazar_ogur_filtered.geojson",
-                mime="application/geo+json",
-                use_container_width=True,
-            )
+def export_csv(features):
+    rows = []
+    for feature in features:
+        props = dict(feature["properties"])
+        props["geometry"] = wkt.dumps(shape(feature["geometry"]))
+        props["geometry_type"] = shape(feature["geometry"]).geom_type
+        rows.append(props)
 
-        csv_text = export_csv(visible_gdf)
+    if not rows:
+        return ""
 
-        with export_col2:
-            st.download_button(
-                label="CSV indir",
-                data=csv_text.encode("utf-8-sig"),
-                file_name="hazar_ogur_filtered.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-
-    except Exception as exc:
-        st.error(f"Dışa aktarma hatası: {exc}")
+    return pd.DataFrame(rows).to_csv(index=False)
 
 
 # ============================================================
-# ALT BİLGİ
+# UYGULAMA ARAYÜZÜ
 # ============================================================
+
+st.title("🗺️ Hazar–Oğur Tarihsel-Coğrafi İnceleme")
+st.caption(
+    "Etkileşimli harita, geometrik kayıtlar, arama, filtreleme "
+    "ve GeoJSON/CSV dışa aktarma."
+)
+
+if "features" not in st.session_state:
+    st.session_state.features = load_default_data()["features"]
+
+with st.sidebar:
+    st.header("⚙️ Kontroller")
+
+    tile_choice = st.selectbox(
+        "Harita tabanı",
+        ["CartoDB Positron", "OpenStreetMap", "Esri Uydu"],
+    )
+
+    uploaded_file = st.file_uploader(
+        "GeoJSON, JSON veya CSV yükle",
+        type=["geojson", "json", "csv"],
+    )
+
+    if st.button(
+        "Yüklenen veriyi kullan",
+        disabled=uploaded_file is None,
+        use_container_width=True,
+    ):
+        try:
+            st.session_state.features = load_uploaded_data(uploaded_file)["features"]
+            st.success("Veri yüklendi.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Dosya yüklenemedi: {exc}")
+
+    if st.button("Varsayılan verilere dön", use_container_width=True):
+        st.session_state.features = load_default_data()["features"]
+        st.rerun()
+
+    st.divider()
+    st.subheader("Filtreler")
+
+    all_features = st.session_state.features
+    groups = sorted({
+        f["properties"]["group"] for f in all_features
+    })
+    selected_groups = st.multiselect(
+        "Kategori",
+        options=groups,
+        default=groups,
+    )
+
+    search_text = st.text_input("Ad veya açıklama ara")
+    geom_types = sorted({
+        shape(f["geometry"]).geom_type for f in all_features
+    })
+    selected_types = st.multiselect(
+        "Geometri türü",
+        options=geom_types,
+        default=geom_types,
+    )
+
+    show_table = st.checkbox("Veri tablosunu göster", value=True)
+
+features = []
+query = search_text.strip().casefold()
+
+for feature in st.session_state.features:
+    props = feature["properties"]
+    geom_type = shape(feature["geometry"]).geom_type
+
+    if selected_groups and props["group"] not in selected_groups:
+        continue
+    if selected_types and geom_type not in selected_types:
+        continue
+    if query:
+        searchable = (
+            props["name"] + " " +
+            props["description"] + " " +
+            props["group"]
+        ).casefold()
+        if query not in searchable:
+            continue
+
+    features.append(feature)
+
+col1, col2, col3 = st.columns(3)
+col1.metric("Toplam kayıt", len(st.session_state.features))
+col2.metric("Filtrelenen kayıt", len(features))
+col3.metric("Geometri türü", len({
+    shape(f["geometry"]).geom_type for f in features
+}))
+
+tab_map, tab_data, tab_export = st.tabs([
+    "🗺️ Harita",
+    "📋 Veriler",
+    "📥 Dışa aktar",
+])
+
+with tab_map:
+    if not features:
+        st.warning("Filtrelerle eşleşen kayıt yok.")
+    else:
+        try:
+            fmap = create_map(features, tile_choice)
+            st_folium(
+                fmap,
+                height=700,
+                use_container_width=True,
+                returned_objects=[],
+                key="hazar_ogur_map",
+            )
+        except Exception as exc:
+            st.error(f"Harita oluşturulamadı: {exc}")
+
+with tab_data:
+    if not features:
+        st.info("Gösterilecek veri yok.")
+    elif show_table:
+        table_rows = []
+        for feature in features:
+            props = feature["properties"]
+            geom = shape(feature["geometry"])
+            table_rows.append({
+                "Ad": props["name"],
+                "Açıklama": props["description"],
+                "Grup": props["group"],
+                "Geometri": geom.geom_type,
+                "Renk": props["color"],
+                "label_dx": props["label_dx"],
+                "label_dy": props["label_dy"],
+            })
+        st.dataframe(
+            pd.DataFrame(table_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.subheader("Kayıt ayrıntıları")
+        for feature in features:
+            props = feature["properties"]
+            with st.expander(props["name"]):
+                st.write(props["description"])
+                st.json(props)
+                st.caption(
+                    "Geometri: " + shape(feature["geometry"]).geom_type
+                )
+
+with tab_export:
+    if not features:
+        st.info("Dışa aktarılacak kayıt yok.")
+    else:
+        st.download_button(
+            "GeoJSON indir",
+            data=export_geojson(features).encode("utf-8"),
+            file_name="hazar_ogur.geojson",
+            mime="application/geo+json",
+            use_container_width=True,
+        )
+
+        st.download_button(
+            "CSV indir",
+            data=export_csv(features).encode("utf-8-sig"),
+            file_name="hazar_ogur.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
 st.divider()
-
 st.caption(
-    "Hazar ve Oğur | Tarihsel-Coğrafi İnceleme — "
-    "Şematik veriyle araştırma ve görselleştirme prototipi."
+    "Araştırma ve görselleştirme prototipi. "
+    "Haritadaki çizgiler şematik güzergâh gösterimleridir."
 )
